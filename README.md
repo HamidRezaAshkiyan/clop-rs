@@ -28,10 +28,26 @@ Whenever you copy an image or screenshot to your clipboard, `clop-rs` silently o
 
 ## Installation & Build
 
-### Prerequisites
-- [Rust toolchain](https://rustup.rs/) (`1.75+`)
+### Option 1: Download Prebuilt Installer (Recommended)
+Download the latest installer from [**GitHub Releases**](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest):
 
-### Build from Source
+- **macOS (`.pkg` Installer)**: [`clop-rs-v0.1.0-macos-arm64.pkg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.1.0-macos-arm64.pkg) — Installs `/Applications/clop-rs.app` and `/usr/local/bin/clop-rs`.
+- **macOS (`.dmg` Disk Image)**: [`clop-rs-v0.1.0-macos-arm64.dmg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.1.0-macos-arm64.dmg) — Drag-and-drop `clop-rs.app` to `Applications`.
+- **Windows (`.exe` / `.zip`)**: [`clop-rs-v0.1.0-windows-x64.exe`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.1.0-windows-x64.exe) / [`clop-rs-v0.1.0-windows-x64.zip`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.1.0-windows-x64.zip)
+
+### Option 2: One-Line Terminal Installer
+
+**macOS**:
+```bash
+curl -fsSL https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/install.sh | bash
+```
+
+**Windows (PowerShell)**:
+```powershell
+irm https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/install.ps1 | iex
+```
+
+### Option 3: Build from Source
 
 ```bash
 git clone https://github.com/HamidRezaAshkiyan/clop-rs.git
