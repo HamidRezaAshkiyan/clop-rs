@@ -9,7 +9,7 @@ use clop_rs::clipboard::ClipboardMonitor;
 use clop_rs::config::{AppConfig, Cli, Commands};
 use clop_rs::downloads::DownloadsWatcher;
 use clop_rs::optimizer::{self, format_bytes};
-use clop_rs::{platform, tray};
+use clop_rs::{context_menu, platform, tray};
 use std::thread;
 use std::time::Duration;
 
@@ -22,18 +22,21 @@ fn main() -> Result<()> {
     let mut config = AppConfig::load().unwrap_or_default();
     config.apply_cli(&cli);
 
-    // Handle subcommands first (`file`, `config`, `autostart`)
+    // Handle subcommands first (`file`, `config`, `autostart`, `context-menu`)
     if let Some(ref cmd) = cli.command {
         match cmd {
-            Commands::File { paths, output } => {
+            Commands::File { paths, output, hud } => {
                 if output.is_some() && paths.len() > 1 {
                     bail!("--output can only be specified when optimizing a single file");
+                }
+                if *hud {
+                    return tray::run_file_with_hud(paths.clone(), output.clone(), config);
                 }
                 for path in paths {
                     let res = optimizer::optimize_file(path, output.as_deref(), &config)?;
                     if res.was_modified {
                         let exif_tag = if res.exif_stripped {
-                            " [EXIF stripped]"
+                            " [EXIF/metadata stripped]"
                         } else {
                             ""
                         };
@@ -92,6 +95,34 @@ fn main() -> Result<()> {
                     println!(
                         "Launch at login is currently: {}",
                         if platform::is_autostart_enabled() {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
+                    );
+                }
+                return Ok(());
+            }
+            Commands::ContextMenu { enable, disable } => {
+                if *enable && *disable {
+                    bail!("Specify either --enable or --disable, not both");
+                }
+                if *enable {
+                    let path = context_menu::set_context_menu(true)?;
+                    println!(
+                        "Installed 'Optimize with clop-rs' right-click context menu ({})",
+                        path.display()
+                    );
+                } else if *disable {
+                    let path = context_menu::set_context_menu(false)?;
+                    println!(
+                        "Removed 'Optimize with clop-rs' right-click context menu ({})",
+                        path.display()
+                    );
+                } else {
+                    println!(
+                        "Right-click context menu is currently: {}",
+                        if context_menu::is_context_menu_enabled() {
                             "enabled"
                         } else {
                             "disabled"

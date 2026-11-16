@@ -281,3 +281,73 @@ fn test_format_bytes() {
     assert_eq!(format_bytes(2048), "2.0 KB");
     assert_eq!(format_bytes(1024 * 1024 * 2), "2.00 MB");
 }
+
+#[test]
+fn test_pdf_native_optimization() {
+    let dir = tempdir().expect("create tempdir");
+    let pdf_path = dir.path().join("document.pdf");
+
+    // Construct a synthetic PDF with an uncompressed stream and XMP metadata bloat
+    let repeated_content =
+        "BT /F1 12 Tf 72 720 Td (Hello clop-rs PDF optimizer!) Tj ET\n".repeat(40);
+    let xmp_bloat = format!(
+        "<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>{}<?xpacket end=\"w\"?>",
+        " ".repeat(4096)
+    );
+    let raw_pdf = format!(
+        "%PDF-1.5\n\
+         1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Metadata 4 0 R >>\nendobj\n\
+         2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\
+         3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>\nendobj\n\
+         4 0 obj\n<< /Type /Metadata /Subtype /XML /Length {} >>\nstream\n{}\nendstream\nendobj\n\
+         5 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n\
+         trailer\n<< /Root 1 0 R /Size 6 >>\n%%EOF\n",
+        xmp_bloat.len(),
+        xmp_bloat,
+        repeated_content.len(),
+        repeated_content
+    );
+    std::fs::write(&pdf_path, raw_pdf.as_bytes()).expect("write synthetic PDF");
+
+    let cfg = AppConfig::default();
+    let res = optimize_file(&pdf_path, None, &cfg).expect("optimize PDF file");
+
+    assert!(res.was_modified, "Expected PDF to be compressed");
+    assert!(
+        res.optimized_size < res.original_size,
+        "Expected optimized PDF ({}) < original ({})",
+        res.optimized_size,
+        res.original_size
+    );
+    assert!(
+        res.exif_stripped,
+        "Expected XMP metadata object to be stripped"
+    );
+
+    let optimized_bytes = std::fs::read(&pdf_path).expect("read optimized PDF");
+    assert!(optimized_bytes.starts_with(b"%PDF-1.5"));
+    assert!(String::from_utf8_lossy(&optimized_bytes).contains("%%EOF"));
+}
+
+#[test]
+fn test_media_and_video_path_detection() {
+    use clop_rs::downloads::is_supported_media_path;
+    use clop_rs::pdf::is_pdf_path;
+    use clop_rs::video::is_video_path;
+    use std::path::Path;
+
+    assert!(is_pdf_path(Path::new("report.pdf")));
+    assert!(is_pdf_path(Path::new("REPORT.PDF")));
+    assert!(!is_pdf_path(Path::new("image.png")));
+
+    assert!(is_video_path(Path::new("recording.mp4")));
+    assert!(is_video_path(Path::new("screen.mov")));
+    assert!(is_video_path(Path::new("clip.webm")));
+    assert!(!is_video_path(Path::new("photo.jpg")));
+
+    assert!(is_supported_media_path(Path::new("doc.pdf")));
+    assert!(is_supported_media_path(Path::new("video.mp4")));
+    assert!(is_supported_media_path(Path::new("pic.png")));
+    assert!(!is_supported_media_path(Path::new("video.mp4.crdownload")));
+    assert!(!is_supported_media_path(Path::new(".hidden.png")));
+}

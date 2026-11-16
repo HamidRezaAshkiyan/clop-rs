@@ -229,15 +229,19 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Optimize one or more image files on disk.
+    /// Optimize one or more image, PDF, or video files on disk.
     File {
-        /// Paths to image files to optimize in-place (or to `--output`).
+        /// Paths to files to optimize in-place (or to `--output`).
         #[arg(required = true)]
         paths: Vec<PathBuf>,
 
         /// Optional output path (only valid when optimizing a single file).
         #[arg(long, short = 'O')]
         output: Option<PathBuf>,
+
+        /// Show the Floating HUD Panel with progress bar, before/after size, and Revert button.
+        #[arg(long)]
+        hud: bool,
     },
     /// View or reset persistent configuration.
     Config {
@@ -257,6 +261,15 @@ pub enum Commands {
         #[arg(long)]
         enable: bool,
         /// Disable launch at login.
+        #[arg(long)]
+        disable: bool,
+    },
+    /// Install or remove the "Optimize with clop-rs" right-click context menu in Finder / Windows Explorer.
+    ContextMenu {
+        /// Install the right-click context menu.
+        #[arg(long)]
+        enable: bool,
+        /// Remove the right-click context menu.
         #[arg(long)]
         disable: bool,
     },

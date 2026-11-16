@@ -161,12 +161,19 @@ pub fn optimize_png_bytes(png_bytes: &[u8], config: &AppConfig) -> Result<Optimi
     optimize_rgba(w, h, img.as_raw(), Some(png_bytes), config)
 }
 
-/// Optimizes an image file on disk (in-place or written to `output_path`).
+/// Optimizes an image, PDF, or video file on disk (in-place or written to `output_path`).
 pub fn optimize_file(
     input_path: &Path,
     output_path: Option<&Path>,
     config: &AppConfig,
 ) -> Result<OptimizedImage> {
+    if crate::pdf::is_pdf_path(input_path) {
+        return crate::pdf::optimize_pdf_file(input_path, output_path, config);
+    }
+    if crate::video::is_video_path(input_path) {
+        return crate::video::optimize_video_file(input_path, output_path, config);
+    }
+
     let start = Instant::now();
     let raw_bytes = fs::read(input_path)
         .with_context(|| format!("Failed to read image file: {}", input_path.display()))?;

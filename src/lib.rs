@@ -1,7 +1,10 @@
 pub mod clipboard;
 pub mod config;
+pub mod context_menu;
 pub mod downloads;
 pub mod hud;
 pub mod optimizer;
+pub mod pdf;
 pub mod platform;
 pub mod tray;
+pub mod video;

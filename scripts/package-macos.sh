@@ -104,21 +104,35 @@ rm -rf "$ICONSET_DIR"
 # Ad-hoc sign the app bundle
 codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
 
-# 1. Build macOS .pkg installer (installs /Applications/clop-rs.app and /usr/local/bin/clop-rs)
+# 1. Build macOS .pkg installer (installs /Applications/clop-rs.app, /usr/local/bin/clop-rs, and Finder Quick Action)
 PKG_ROOT="$DIST_DIR/pkg_root"
-mkdir -p "$PKG_ROOT/Applications" "$PKG_ROOT/usr/local/bin"
+PKG_SCRIPTS="$DIST_DIR/pkg_scripts"
+mkdir -p "$PKG_ROOT/Applications" "$PKG_ROOT/usr/local/bin" "$PKG_SCRIPTS"
 cp -R "$APP_DIR" "$PKG_ROOT/Applications/"
 cp "$BIN_PATH" "$PKG_ROOT/usr/local/bin/clop-rs"
 chmod +x "$PKG_ROOT/usr/local/bin/clop-rs"
 
+cat > "$PKG_SCRIPTS/postinstall" <<'POST'
+#!/usr/bin/env bash
+xattr -cr "/Applications/clop-rs.app" "/usr/local/bin/clop-rs" 2>/dev/null || true
+CONSOLE_USER="$(stat -f "%Su" /dev/console 2>/dev/null || true)"
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    sudo -u "$CONSOLE_USER" "/usr/local/bin/clop-rs" context-menu --enable 2>/dev/null || true
+    sudo -u "$CONSOLE_USER" open "/Applications/clop-rs.app" 2>/dev/null || true
+fi
+exit 0
+POST
+chmod +x "$PKG_SCRIPTS/postinstall"
+
 PKG_PATH="$DIST_DIR/clop-rs-${VERSION}-macos-${ARCH}.pkg"
 pkgbuild \
     --root "$PKG_ROOT" \
+    --scripts "$PKG_SCRIPTS" \
     --install-location "/" \
     --identifier "com.hamidrezaashkiyan.clop-rs.pkg" \
     --version "${VERSION#v}" \
     "$PKG_PATH"
-rm -rf "$PKG_ROOT"
+rm -rf "$PKG_ROOT" "$PKG_SCRIPTS"
 
 # 2. Build macOS .dmg installer (if allowed by environment)
 DMG_STAGING="$DIST_DIR/dmg_staging"

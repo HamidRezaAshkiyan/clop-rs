@@ -1,6 +1,6 @@
 [package]
 name = "clop-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Minimal-footprint cross-platform (macOS & Windows) clipboard image optimizer inspired by Clop"
 license = "MIT"
@@ -14,10 +14,11 @@ anyhow = "1.0"
 arboard = "3.4"
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"
+env_logger = "0.11"
+flate2 = "1.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "tiff"] }
 imagequant = "4.3"
 log = "0.4"
-env_logger = "0.11"
 oxipng = "9.1"
 png = "0.17"
 raw-window-handle = "0.6"

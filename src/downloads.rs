@@ -1,6 +1,7 @@
 use crate::clipboard::OptimizationSummary;
 use crate::config::AppConfig;
 use crate::optimizer::{self, format_bytes, generate_thumbnail};
+use crate::{pdf, video};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs;
@@ -14,7 +15,7 @@ pub struct FileBackup {
     pub original_bytes: Vec<u8>,
 }
 
-/// Newly arrived image file in the Downloads directory ready for optimization.
+/// Newly arrived image, PDF, or video file in the Downloads directory ready for optimization.
 pub struct PendingDownloadFile {
     pub path: PathBuf,
     pub file_name: String,
@@ -24,7 +25,8 @@ pub struct PendingDownloadFile {
     pub thumbnail_64: Vec<u8>,
 }
 
-/// Watches the user's Downloads directory for newly added image files and optimizes them automatically.
+/// Watches the user's Downloads directory for newly added image, PDF, and video files
+/// and optimizes them automatically.
 pub struct DownloadsWatcher {
     watched_dir: Option<PathBuf>,
     seen_files: HashMap<PathBuf, (SystemTime, u64)>,
@@ -69,7 +71,7 @@ impl DownloadsWatcher {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if is_supported_image_path(&path) {
+            if is_supported_media_path(&path) {
                 if let Ok(meta) = entry.metadata() {
                     if let Ok(mtime) = meta.modified() {
                         self.seen_files.insert(path, (mtime, meta.len()));
@@ -79,7 +81,7 @@ impl DownloadsWatcher {
         }
     }
 
-    /// Scans the watched Downloads directory for the next new unoptimized image file.
+    /// Scans the watched Downloads directory for the next new unoptimized image, PDF, or video file.
     pub fn inspect_next_file(&mut self, config: &AppConfig) -> Option<PendingDownloadFile> {
         if !config.watch_downloads {
             return None;
@@ -94,14 +96,14 @@ impl DownloadsWatcher {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() || !is_supported_image_path(&path) {
+            if !path.is_file() || !is_supported_media_path(&path) {
                 continue;
             }
             let Ok(meta) = entry.metadata() else {
                 continue;
             };
             let len = meta.len();
-            if len == 0 || len > 50 * 1024 * 1024 {
+            if len == 0 || len > 500 * 1024 * 1024 {
                 continue;
             }
             let Ok(mtime) = meta.modified() else {
@@ -127,12 +129,21 @@ impl DownloadsWatcher {
             let Ok(raw_bytes) = fs::read(&path) else {
                 continue;
             };
-            let Ok(decoded) = image::load_from_memory(&raw_bytes) else {
-                continue;
+
+            let (width, height, thumbnail_64) = if pdf::is_pdf_path(&path) {
+                (0, 0, pdf::procedural_pdf_icon_64())
+            } else if video::is_video_path(&path) {
+                (0, 0, video::extract_video_thumbnail_64(&path))
+            } else {
+                let Ok(decoded) = image::load_from_memory(&raw_bytes) else {
+                    continue;
+                };
+                let rgba = decoded.into_rgba8();
+                let (w, h) = rgba.dimensions();
+                let thumb = generate_thumbnail(w, h, rgba.as_raw(), 64);
+                (w, h, thumb)
             };
-            let rgba = decoded.into_rgba8();
-            let (width, height) = rgba.dimensions();
-            let thumbnail_64 = generate_thumbnail(width, height, rgba.as_raw(), 64);
+
             let file_name = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -190,7 +201,7 @@ impl DownloadsWatcher {
         };
 
         log::info!(
-            "Optimized Downloads image '{}': {}",
+            "Optimized Downloads file '{}': {}",
             summary.source_label,
             summary.display_short()
         );
@@ -227,7 +238,7 @@ impl DownloadsWatcher {
     }
 }
 
-fn is_supported_image_path(path: &Path) -> bool {
+pub fn is_supported_media_path(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
@@ -244,6 +255,18 @@ fn is_supported_image_path(path: &Path) -> bool {
     };
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tiff"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "webp"
+            | "bmp"
+            | "tiff"
+            | "pdf"
+            | "mp4"
+            | "mov"
+            | "mkv"
+            | "webm"
+            | "m4v"
+            | "avi"
     )
 }

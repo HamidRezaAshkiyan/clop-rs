@@ -32,7 +32,8 @@ if [ -w "$INSTALL_DIR" ]; then
 else
     sudo cp "$EXTRACTED_DIR/clop-rs" "$INSTALL_DIR/clop-rs"
     sudo chmod +x "$INSTALL_DIR/clop-rs"
-    echo "✓ Installed CLI binary to $INSTALL_DIR/clop-rs"
+echo "✓ Installed CLI binary to $INSTALL_DIR/clop-rs"
 fi
 
+"$INSTALL_DIR/clop-rs" context-menu --enable || true
 echo "Done! Run 'clop-rs' or open /Applications/clop-rs.app to start."

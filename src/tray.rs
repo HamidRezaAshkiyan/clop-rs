@@ -1,10 +1,13 @@
-use crate::clipboard::{ClipboardMonitor, SessionStats};
+use crate::clipboard::{ClipboardMonitor, OptimizationSummary, SessionStats};
 use crate::config::{AppConfig, OptimizationMode};
+use crate::context_menu;
 use crate::downloads::DownloadsWatcher;
 use crate::hud::{FloatingHud, HudAction, HudPhase, RevertSource};
-use crate::optimizer::format_bytes;
-use crate::platform;
+use crate::optimizer::{self, format_bytes, generate_thumbnail};
+use crate::{pdf, platform, video};
 use anyhow::{Context, Result};
+use std::fs;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -14,17 +17,22 @@ use tray_icon::{Icon, TrayIconBuilder};
 /// Runs the background event loop with:
 /// - Native macOS Menu Bar / Windows System Tray icon
 /// - Floating HUD Panel (progress bar, before/after size comparison, `[REVERT]` button)
-/// - Automatic Clipboard & Downloads folder optimization
+/// - Automatic Clipboard & Downloads folder optimization (Images, PDFs, Videos)
+/// - Finder / Windows Explorer Right-Click Context Menu toggle
 pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
     let event_loop = EventLoopBuilder::new().build();
 
-    // Hide Dock icon on macOS so we only appear in the top menu bar and floating HUD
     platform::configure_background_app();
+
+    // Ensure the "Optimize with clop-rs" right-click context menu is installed by default
+    if !context_menu::is_context_menu_enabled() {
+        let _ = context_menu::set_context_menu(true);
+    }
 
     let menu = Menu::new();
 
     let status_item = MenuItem::new("clop-rs — Watching Clipboard", false, None);
-    let session_item = MenuItem::new("Session: 0 images (0 B saved)", false, None);
+    let session_item = MenuItem::new("Session: 0 files/images (0 B saved)", false, None);
     let optimize_now_item = MenuItem::new("Optimize Clipboard Now", true, None);
     let revert_item = MenuItem::new("Revert Last Optimization", false, None);
 
@@ -41,6 +49,12 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
         "Auto-Optimize Downloads Folder",
         true,
         config.watch_downloads,
+        None,
+    );
+    let context_menu_item = CheckMenuItem::new(
+        "Right-Click 'Optimize with clop-rs'",
+        true,
+        context_menu::is_context_menu_enabled(),
         None,
     );
     let show_hud_item = CheckMenuItem::new(
@@ -67,6 +81,7 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
     menu.append(&smart_mode_item)?;
     menu.append(&strip_exif_item)?;
     menu.append(&watch_downloads_item)?;
+    menu.append(&context_menu_item)?;
     menu.append(&show_hud_item)?;
     menu.append(&autostart_item)?;
     menu.append(&PredefinedMenuItem::separator())?;
@@ -75,7 +90,7 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
     let icon = build_tray_icon()?;
     let _tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("clop-rs — Clipboard & Downloads Image Optimizer")
+        .with_tooltip("clop-rs — Image, Video & PDF Optimizer")
         .with_icon(icon)
         .build()
         .context("Failed to create system tray / menu bar icon")?;
@@ -100,6 +115,7 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
     let smart_mode_id = smart_mode_item.id().clone();
     let strip_exif_id = strip_exif_item.id().clone();
     let watch_downloads_id = watch_downloads_item.id().clone();
+    let context_menu_id = context_menu_item.id().clone();
     let show_hud_id = show_hud_item.id().clone();
     let autostart_id = autostart_item.id().clone();
     let quit_id = quit_item.id().clone();
@@ -179,6 +195,12 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                 }
                 let _ = config.save();
                 log::info!("Set watch_downloads to {}", config.watch_downloads);
+            } else if menu_event.id == context_menu_id {
+                let enable = context_menu_item.is_checked();
+                if let Err(err) = context_menu::set_context_menu(enable) {
+                    log::error!("Failed to toggle context menu: {}", err);
+                    context_menu_item.set_checked(!enable);
+                }
             } else if menu_event.id == show_hud_id {
                 config.show_floating_hud = show_hud_item.is_checked();
                 hud.set_enabled(config.show_floating_hud, elwt);
@@ -243,7 +265,6 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
             let now = Instant::now();
             if now >= next_poll {
                 if !paused {
-                    // Check clipboard for new unoptimized image
                     if let Some(pending) = monitor.inspect_new_image(false) {
                         hud.show_optimizing(
                             "Clipboard",
@@ -274,7 +295,6 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                         }
                     }
 
-                    // Check Downloads folder if enabled
                     if config.watch_downloads {
                         if let Some(pending_file) = downloads.inspect_next_file(&config) {
                             hud.show_optimizing(
@@ -326,6 +346,113 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
     });
 }
 
+/// Runs a one-shot file optimization (triggered from the Finder / Explorer Right-Click Menu
+/// `Optimize with clop-rs` or `clop-rs file --hud <paths>`) with the Floating HUD Panel!
+pub fn run_file_with_hud(
+    paths: Vec<PathBuf>,
+    output: Option<PathBuf>,
+    config: AppConfig,
+) -> Result<()> {
+    let event_loop = EventLoopBuilder::new().build();
+    platform::configure_background_app();
+
+    let mut hud = FloatingHud::new(&event_loop, true);
+    let mut backups: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut started = false;
+
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(80));
+
+        if !started {
+            started = true;
+            let mut last_summary: Option<OptimizationSummary> = None;
+
+            for path in &paths {
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("File")
+                    .to_string();
+                let orig_bytes = fs::read(path).unwrap_or_default();
+                let orig_len = orig_bytes.len();
+
+                let thumb = if pdf::is_pdf_path(path) {
+                    pdf::procedural_pdf_icon_64()
+                } else if video::is_video_path(path) {
+                    video::extract_video_thumbnail_64(path)
+                } else if let Ok(img) = image::load_from_memory(&orig_bytes) {
+                    let rgba = img.into_rgba8();
+                    generate_thumbnail(rgba.width(), rgba.height(), rgba.as_raw(), 64)
+                } else {
+                    vec![0u8; 64 * 64 * 4]
+                };
+
+                hud.show_optimizing(&file_name, 0, 0, orig_len, thumb.clone());
+
+                if let Ok(res) = optimizer::optimize_file(path, output.as_deref(), &config) {
+                    let target_path = output.clone().unwrap_or_else(|| path.clone());
+                    if res.was_modified && output.is_none() && !orig_bytes.is_empty() {
+                        backups.push((target_path, orig_bytes));
+                    }
+                    last_summary = Some(OptimizationSummary {
+                        source_label: file_name,
+                        width: res.width,
+                        height: res.height,
+                        original_size: res.original_size,
+                        optimized_size: res.optimized_size,
+                        saved_bytes: res.saved_bytes(),
+                        saved_percent: res.saved_percent(),
+                        exif_stripped: res.exif_stripped,
+                        elapsed: res.elapsed,
+                        thumbnail_64: thumb,
+                    });
+                }
+            }
+
+            if let Some(summary) = last_summary {
+                hud.show_completed(summary, RevertSource::Downloads);
+            } else {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+        }
+
+        if let Event::WindowEvent {
+            window_id,
+            ref event,
+            ..
+        } = event
+        {
+            if Some(window_id) == hud.window_id() {
+                match hud.handle_window_event(event) {
+                    HudAction::Revert(_) => {
+                        let mut total_restored = 0usize;
+                        for (path, orig_bytes) in backups.drain(..) {
+                            total_restored += orig_bytes.len();
+                            let _ = fs::write(path, orig_bytes);
+                        }
+                        if total_restored > 0 {
+                            hud.show_reverted("File", total_restored);
+                        }
+                    }
+                    HudAction::Dismiss => {
+                        *control_flow = ControlFlow::Exit;
+                        return;
+                    }
+                    HudAction::None => {}
+                }
+            }
+        }
+
+        if let Event::NewEvents(_) | Event::MainEventsCleared = event {
+            hud.tick();
+            if matches!(hud.phase, HudPhase::Hidden) {
+                *control_flow = ControlFlow::Exit;
+            }
+        }
+    });
+}
+
 fn perform_revert(
     source: RevertSource,
     monitor: &mut ClipboardMonitor,
@@ -362,7 +489,7 @@ fn perform_revert(
                 hud.show_reverted(name, orig_size);
             }
             Ok(None) => {}
-            Err(err) => log::warn!("Failed to revert Downloads image: {}", err),
+            Err(err) => log::warn!("Failed to revert Downloads file: {}", err),
         },
     }
 }
@@ -375,7 +502,7 @@ fn update_tray_labels(
 ) {
     status_item.set_text(format!("Last: {}", last_short));
     session_item.set_text(format!(
-        "Session: {} img ({} / -{:.1}%)",
+        "Session: {} items ({} / -{:.1}%)",
         stats.images_optimized,
         format_bytes(stats.total_saved_bytes() as usize),
         stats.total_saved_percent()

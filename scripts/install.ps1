@@ -28,5 +28,6 @@ if ($UserPath -notlike "*$InstallDir*") {
 }
 
 $ExePath = Join-Path $InstallDir "clop-rs.exe"
-Write-Host "✓ Installed clop-rs to $ExePath" -ForegroundColor Green
+& $ExePath context-menu --enable | Out-Null
+Write-Host "✓ Installed clop-rs to $ExePath and registered 'Optimize with clop-rs' right-click menu" -ForegroundColor Green
 Write-Host "Run 'clop-rs autostart --enable' to start automatically at login." -ForegroundColor Yellow

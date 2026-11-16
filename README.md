@@ -29,8 +29,15 @@ The non-intrusive **Floating HUD Panel** appears in the bottom-right corner when
   - Shows a **live progress bar** during optimization, a **64×64 thumbnail preview**, the exact **Before → After size & percentage saved** (e.g. `445.7 KB -> 103.7 KB (-76.7%)`), an **`[EXIF]`** badge when metadata is stripped, and a one-click **`[REVERT]`** button to immediately restore the original unoptimized image.
 - **One-Click Revert**:
   - Click **`[REVERT]`** right on the floating HUD panel (or **"Revert Last Optimization"** in the Menu Bar / System Tray menu) to restore the original unoptimized image back to the clipboard or Downloads folder.
+- **Right-Click "Optimize with clop-rs" Context Menu**:
+  - Right-click any **Image, Video, or PDF** file in **macOS Finder** (*Quick Actions / Services → Optimize with clop-rs*) or **Windows Explorer** (*Optimize with clop-rs*) to optimize it on the spot with the Floating HUD Panel and one-click **`[REVERT]`**.
+  - Can be toggled on/off in the Menu Bar / System Tray or via `clop-rs context-menu --enable` / `--disable`.
+- **Video & Screen Recording Optimization (FFmpeg)**:
+  - Compresses `.mp4`, `.mov`, `.mkv`, `.webm`, `.m4v`, and `.avi` videos using hardware-accelerated H.264 (`h264_videotoolbox` on macOS) or `libx264` CRF encoding, strips video metadata, and shows a video frame preview in the Floating HUD Panel.
+- **PDF Compression**:
+  - Built-in pure-Rust PDF stream optimizer (re-compresses `/FlateDecode` streams, optimizes embedded `/DCTDecode` JPEG images, strips XMP metadata bloat, and rebuilds the `xref` table) + automatic Ghostscript (`gs`) integration when available.
 - **Automatic Downloads Folder Optimization**:
-  - Toggle **"Auto-Optimize Downloads Folder"** in the Menu Bar / System Tray (or pass `--watch-downloads`) to automatically optimize newly downloaded `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, and `.tiff` images in `~/Downloads`.
+  - Toggle **"Auto-Optimize Downloads Folder"** in the Menu Bar / System Tray (or pass `--watch-downloads`) to automatically optimize newly downloaded **Images, Videos, and PDFs** in `~/Downloads`.
 - **EXIF & Metadata Stripping**:
   - Toggle **"Strip EXIF & Metadata"** in the Menu Bar / System Tray (or `--strip-exif` / `--keep-exif` on the CLI) to strip camera EXIF, GPS coordinates, XMP/IPTC, and PNG text/time chunks.
 - **Cross-Platform (macOS & Windows) & Ultra-Minimal Footprint**:
@@ -53,9 +60,9 @@ The non-intrusive **Floating HUD Panel** appears in the bottom-right corner when
 ### Option 1: Download Prebuilt Installer (Recommended)
 Download the latest installer from [**GitHub Releases**](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest):
 
-- **macOS (`.pkg` Installer)**: [`clop-rs-v0.2.0-macos-arm64.pkg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.2.0-macos-arm64.pkg) — Installs `/Applications/clop-rs.app` and `/usr/local/bin/clop-rs`.
-- **macOS (`.dmg` Disk Image)**: [`clop-rs-v0.2.0-macos-arm64.dmg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.2.0-macos-arm64.dmg) — Drag-and-drop `clop-rs.app` to `Applications`.
-- **Windows (`.exe` / `.zip`)**: [`clop-rs-v0.2.0-windows-x64.exe`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.2.0-windows-x64.exe) / [`clop-rs-v0.2.0-windows-x64.zip`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.2.0-windows-x64.zip)
+- **macOS (`.pkg` Installer)**: [`clop-rs-v0.3.0-macos-arm64.pkg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.3.0-macos-arm64.pkg) — Installs `/Applications/clop-rs.app`, `/usr/local/bin/clop-rs`, and the Finder Right-Click Quick Action.
+- **macOS (`.dmg` Disk Image)**: [`clop-rs-v0.3.0-macos-arm64.dmg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.3.0-macos-arm64.dmg) — Drag-and-drop `clop-rs.app` to `Applications`.
+- **Windows (`.exe` / `.zip`)**: [`clop-rs-v0.3.0-windows-x64.exe`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.3.0-windows-x64.exe) / [`clop-rs-v0.3.0-windows-x64.zip`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.3.0-windows-x64.zip)
 
 ### Option 2: One-Line Terminal Installer
 
