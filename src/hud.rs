@@ -756,7 +756,7 @@ fn present_canvas_to_window(window: &Window, canvas: &Canvas) {
             use windows_sys::Win32::Foundation::HWND;
             use windows_sys::Win32::Graphics::Gdi::{
                 GetDC, ReleaseDC, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-                DIB_RGB_COLORS, SRCCOPY,
+                DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
             };
 
             let hwnd = win32.hwnd.get() as HWND;
@@ -767,6 +767,7 @@ fn present_canvas_to_window(window: &Window, canvas: &Canvas) {
 
             // Convert RGBA to BGRA top-down DIB
             let mut bgra = Vec::with_capacity(canvas.rgba.len());
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for px in canvas.rgba.chunks_exact(4) {
                 bgra.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
             }
@@ -786,7 +787,12 @@ fn present_canvas_to_window(window: &Window, canvas: &Canvas) {
                     biClrUsed: 0,
                     biClrImportant: 0,
                 },
-                bmiColors: [Default::default()],
+                bmiColors: [RGBQUAD {
+                    rgbBlue: 0,
+                    rgbGreen: 0,
+                    rgbRed: 0,
+                    rgbReserved: 0,
+                }],
             };
 
             StretchDIBits(
