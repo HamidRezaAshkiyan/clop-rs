@@ -1,8 +1,24 @@
-# clop-rs ⚡
+<p align="center">
+  <img src="assets/logo.png" alt="clop-rs logo" width="128" />
+</p>
 
-A minimal-footprint, cross-platform (**macOS** & **Windows**) automatic clipboard image optimizer written in pure **Rust**, inspired by [FuzzyIdeas/Clop](https://github.com/FuzzyIdeas/Clop).
+<h1 align="center">clop-rs ⚡</h1>
+
+<p align="center">
+  A minimal-footprint, cross-platform (<strong>macOS</strong> &amp; <strong>Windows</strong>) automatic clipboard &amp; downloads image optimizer written in pure <strong>Rust</strong>, inspired by <a href="https://github.com/FuzzyIdeas/Clop">FuzzyIdeas/Clop</a>.
+</p>
 
 Whenever you copy an image or screenshot to your clipboard, `clop-rs` silently optimizes it in-place in milliseconds (typically **60–85% smaller**) so you can immediately paste tiny, fast-loading images into Slack, Discord, GitHub, Notion, browsers, or emails.
+
+---
+
+## UI Preview
+
+<p align="center">
+  <img src="assets/hud-completed.png" alt="clop-rs Floating HUD Panel showing clipboard optimization savings and Revert button" width="420" />
+</p>
+
+The non-intrusive **Floating HUD Panel** appears in the bottom-right corner whenever an image is optimized, displaying a 64×64 thumbnail preview, exact Before → After size and savings percentage, an `[EXIF]` badge when metadata is stripped, a live progress bar, and a one-click **`[REVERT]`** button.
 
 ---
 
@@ -37,9 +53,9 @@ Whenever you copy an image or screenshot to your clipboard, `clop-rs` silently o
 ### Option 1: Download Prebuilt Installer (Recommended)
 Download the latest installer from [**GitHub Releases**](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest):
 
-- **macOS (`.pkg` Installer)**: [`clop-rs-v0.1.0-macos-arm64.pkg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.1.0-macos-arm64.pkg) — Installs `/Applications/clop-rs.app` and `/usr/local/bin/clop-rs`.
-- **macOS (`.dmg` Disk Image)**: [`clop-rs-v0.1.0-macos-arm64.dmg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.1.0-macos-arm64.dmg) — Drag-and-drop `clop-rs.app` to `Applications`.
-- **Windows (`.exe` / `.zip`)**: [`clop-rs-v0.1.0-windows-x64.exe`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.1.0-windows-x64.exe) / [`clop-rs-v0.1.0-windows-x64.zip`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.1.0-windows-x64.zip)
+- **macOS (`.pkg` Installer)**: [`clop-rs-v0.2.0-macos-arm64.pkg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.2.0-macos-arm64.pkg) — Installs `/Applications/clop-rs.app` and `/usr/local/bin/clop-rs`.
+- **macOS (`.dmg` Disk Image)**: [`clop-rs-v0.2.0-macos-arm64.dmg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.2.0-macos-arm64.dmg) — Drag-and-drop `clop-rs.app` to `Applications`.
+- **Windows (`.exe` / `.zip`)**: [`clop-rs-v0.2.0-windows-x64.exe`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.2.0-windows-x64.exe) / [`clop-rs-v0.2.0-windows-x64.zip`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.2.0-windows-x64.zip)
 
 ### Option 2: One-Line Terminal Installer
 
@@ -72,6 +88,12 @@ The optimized binary will be generated at:
 ### 1. Run in Menu Bar / System Tray Mode (Default)
 ```bash
 clop-rs
+
+# Also auto-optimize newly downloaded images in ~/Downloads
+clop-rs --watch-downloads
+
+# Run in tray mode without the floating HUD panel
+clop-rs --no-hud
 ```
 
 ### 2. Run as a Pure Headless Daemon
