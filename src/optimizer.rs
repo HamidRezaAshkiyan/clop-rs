@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 /// Result of optimizing an in-memory or clipboard image.
 #[derive(Debug, Clone)]
 pub struct OptimizedImage {
-    /// Exact optimized PNG file bytes (ready for `public.png` / `PNG` clipboard formats or disk).
+    /// Exact optimized image file bytes (PNG for clipboard/PNG files, or JPEG if lossless JPEG strip).
     pub png_bytes: Vec<u8>,
     /// Raw RGBA pixel buffer (`width * height * 4` bytes) of the resulting image.
     pub rgba_bytes: Vec<u8>,
@@ -18,12 +18,14 @@ pub struct OptimizedImage {
     pub width: u32,
     /// Final height in pixels.
     pub height: u32,
-    /// Original PNG byte size before optimization.
+    /// Original byte size before optimization.
     pub original_size: usize,
-    /// Final PNG byte size after optimization.
+    /// Final byte size after optimization.
     pub optimized_size: usize,
-    /// Whether the image was reduced in size or dimensions.
+    /// Whether the image was reduced in size, dimensions, or had EXIF stripped.
     pub was_modified: bool,
+    /// Whether EXIF or ancillary metadata chunks were stripped during optimization.
+    pub exif_stripped: bool,
     /// Wall-clock duration spent optimizing.
     pub elapsed: Duration,
 }
@@ -44,10 +46,6 @@ impl OptimizedImage {
 }
 
 /// Optimizes an image starting from raw RGBA pixels and an optional original PNG byte buffer.
-///
-/// If `original_png` is provided (for example, read directly from macOS `public.png` pasteboard
-/// or Windows `PNG` clipboard format), its length is used as the exact baseline `original_size`
-/// and size-guard reference.
 pub fn optimize_rgba(
     width: u32,
     height: u32,
@@ -70,6 +68,11 @@ pub fn optimize_rgba(
             rgba_bytes.len()
         );
     }
+
+    let had_metadata = config.strip_metadata
+        && original_png
+            .filter(|b| !b.is_empty())
+            .is_some_and(has_png_metadata);
 
     // 1. Optional resolution downscaling (scale_factor, max_width, max_height)
     let (work_w, work_h, work_rgba, resized) = maybe_downscale(width, height, rgba_bytes, config)?;
@@ -108,11 +111,22 @@ pub fn optimize_rgba(
         _ => run_oxipng(&baseline_png, config)?,
     };
 
+    // If EXIF/metadata stripping was requested and `candidate_png` still had metadata or wasn't smaller,
+    // also try direct PNG metadata chunk stripping.
+    let candidate_png = if config.strip_metadata && has_png_metadata(&candidate_png) {
+        strip_png_metadata_chunks(&candidate_png).unwrap_or(candidate_png)
+    } else {
+        candidate_png
+    };
+
+    let exif_stripped = had_metadata && !has_png_metadata(&candidate_png);
+
     // 4. Size guard: never produce a larger PNG unless the user explicitly downscaled dimensions
-    let (final_png, was_modified) = if candidate_png.len() < baseline_png.len() {
+    let (final_png, was_modified) = if candidate_png.len() < baseline_png.len()
+        || resized
+        || (exif_stripped && candidate_png.len() <= baseline_png.len())
+    {
         (candidate_png, true)
-    } else if resized {
-        (baseline_png, true)
     } else {
         (baseline_png, false)
     };
@@ -132,7 +146,8 @@ pub fn optimize_rgba(
         height: work_h,
         original_size,
         optimized_size,
-        was_modified: was_modified && (optimized_size < original_size || resized),
+        was_modified: was_modified && (optimized_size < original_size || resized || exif_stripped),
+        exif_stripped,
         elapsed: start.elapsed(),
     })
 }
@@ -152,6 +167,7 @@ pub fn optimize_file(
     output_path: Option<&Path>,
     config: &AppConfig,
 ) -> Result<OptimizedImage> {
+    let start = Instant::now();
     let raw_bytes = fs::read(input_path)
         .with_context(|| format!("Failed to read image file: {}", input_path.display()))?;
     let original_size = raw_bytes.len();
@@ -168,6 +184,69 @@ pub fn optimize_file(
         .into_rgba8();
     let (w, h) = decoded.dimensions();
 
+    // Special handling for JPEG files when target is still a `.jpg`/`.jpeg` file:
+    // Strip EXIF/APP markers losslessly and/or re-encode if downscaling or smart mode improves size.
+    let target = output_path.unwrap_or(input_path);
+    let target_is_jpeg = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg"));
+
+    if format == ImageFormat::Jpeg && target_is_jpeg {
+        let (work_w, work_h, work_rgba, resized) = maybe_downscale(w, h, decoded.as_raw(), config)?;
+        let (stripped_jpeg, exif_removed) = if config.strip_metadata {
+            match strip_jpeg_exif(&raw_bytes) {
+                Some(stripped) => {
+                    let removed = stripped.len() < raw_bytes.len();
+                    (stripped, removed)
+                }
+                None => (raw_bytes.clone(), false),
+            }
+        } else {
+            (raw_bytes.clone(), false)
+        };
+
+        let mut best_bytes = stripped_jpeg;
+        if resized || config.mode == OptimizationMode::Smart {
+            let quality = config.quality_max.clamp(60, 95);
+            let mut reencoded = Vec::new();
+            let rgb_img = image::DynamicImage::ImageRgba8(
+                RgbaImage::from_raw(work_w, work_h, work_rgba.clone()).unwrap(),
+            )
+            .into_rgb8();
+            let mut encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut reencoded, quality);
+            if encoder.encode_image(&rgb_img).is_ok()
+                && (resized || reencoded.len() < best_bytes.len())
+            {
+                best_bytes = reencoded;
+            }
+        }
+
+        let was_modified = best_bytes.len() < original_size || resized || exif_removed;
+        if was_modified || output_path.is_some() {
+            fs::write(target, &best_bytes).with_context(|| {
+                format!("Failed to write optimized JPEG to {}", target.display())
+            })?;
+        }
+        let optimized_size = if was_modified {
+            best_bytes.len()
+        } else {
+            original_size
+        };
+        return Ok(OptimizedImage {
+            png_bytes: best_bytes,
+            rgba_bytes: work_rgba,
+            width: work_w,
+            height: work_h,
+            original_size,
+            optimized_size,
+            was_modified,
+            exif_stripped: exif_removed,
+            elapsed: start.elapsed(),
+        });
+    }
+
     let original_png_ref = if format == ImageFormat::Png {
         Some(raw_bytes.as_slice())
     } else {
@@ -177,18 +256,154 @@ pub fn optimize_file(
     let mut result = optimize_rgba(w, h, decoded.as_raw(), original_png_ref, config)?;
     result.original_size = original_size;
 
-    let target = output_path.unwrap_or(input_path);
-    if result.png_bytes.len() < original_size || output_path.is_some() {
+    if result.png_bytes.len() < original_size || result.exif_stripped || output_path.is_some() {
         fs::write(target, &result.png_bytes)
             .with_context(|| format!("Failed to write optimized image to {}", target.display()))?;
         result.optimized_size = result.png_bytes.len();
-        result.was_modified = result.optimized_size < original_size;
+        result.was_modified = result.optimized_size < original_size || result.exif_stripped;
     } else {
         result.optimized_size = original_size;
         result.was_modified = false;
     }
 
     Ok(result)
+}
+
+/// Generates a square RGBA thumbnail (`thumb_size x thumb_size`) with aspect-preserving fit
+/// for rendering inside the Floating HUD Panel.
+pub fn generate_thumbnail(width: u32, height: u32, rgba_bytes: &[u8], thumb_size: u32) -> Vec<u8> {
+    let mut canvas = vec![0u8; (thumb_size * thumb_size * 4) as usize];
+    if width == 0 || height == 0 || rgba_bytes.len() < (width * height * 4) as usize {
+        return canvas;
+    }
+
+    let scale = (thumb_size as f64 / width as f64).min(thumb_size as f64 / height as f64);
+    let dst_w = ((width as f64 * scale).round() as u32).clamp(1, thumb_size);
+    let dst_h = ((height as f64 * scale).round() as u32).clamp(1, thumb_size);
+    let pad_x = (thumb_size - dst_w) / 2;
+    let pad_y = (thumb_size - dst_h) / 2;
+
+    if let Some(src_img) = RgbaImage::from_raw(width, height, rgba_bytes.to_vec()) {
+        let resized = image::imageops::resize(&src_img, dst_w, dst_h, FilterType::Triangle);
+        for y in 0..dst_h {
+            for x in 0..dst_w {
+                let px = resized.get_pixel(x, y);
+                let cx = pad_x + x;
+                let cy = pad_y + y;
+                let idx = ((cy * thumb_size + cx) * 4) as usize;
+                canvas[idx..idx + 4].copy_from_slice(&px.0);
+            }
+        }
+    }
+    canvas
+}
+
+/// Checks if a PNG byte buffer contains EXIF or ancillary text/time metadata chunks.
+pub fn has_png_metadata(png_bytes: &[u8]) -> bool {
+    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if png_bytes.len() < 8 || &png_bytes[..8] != PNG_SIG {
+        return false;
+    }
+    let mut pos = 8;
+    while pos + 12 <= png_bytes.len() {
+        let len = u32::from_be_bytes([
+            png_bytes[pos],
+            png_bytes[pos + 1],
+            png_bytes[pos + 2],
+            png_bytes[pos + 3],
+        ]) as usize;
+        let chunk_type = &png_bytes[pos + 4..pos + 8];
+        if matches!(chunk_type, b"eXIf" | b"tEXt" | b"zTXt" | b"iTXt" | b"tIME") {
+            return true;
+        }
+        pos = pos.saturating_add(12).saturating_add(len);
+    }
+    false
+}
+
+/// Directly strips `eXIf`, `tEXt`, `zTXt`, `iTXt`, and `tIME` chunks from a PNG byte stream.
+pub fn strip_png_metadata_chunks(png_bytes: &[u8]) -> Option<Vec<u8>> {
+    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if png_bytes.len() < 8 || &png_bytes[..8] != PNG_SIG {
+        return None;
+    }
+    let mut out = Vec::with_capacity(png_bytes.len());
+    out.extend_from_slice(PNG_SIG);
+    let mut pos = 8;
+    let mut stripped_any = false;
+
+    while pos + 12 <= png_bytes.len() {
+        let len = u32::from_be_bytes([
+            png_bytes[pos],
+            png_bytes[pos + 1],
+            png_bytes[pos + 2],
+            png_bytes[pos + 3],
+        ]) as usize;
+        let total_chunk = 12usize.checked_add(len)?;
+        if pos + total_chunk > png_bytes.len() {
+            return None;
+        }
+        let chunk_type = &png_bytes[pos + 4..pos + 8];
+        if matches!(chunk_type, b"eXIf" | b"tEXt" | b"zTXt" | b"iTXt" | b"tIME") {
+            stripped_any = true;
+        } else {
+            out.extend_from_slice(&png_bytes[pos..pos + total_chunk]);
+        }
+        pos += total_chunk;
+    }
+
+    if stripped_any {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// Losslessly strips EXIF (`APP1`), ICC/XMP (`APP2`), IPTC (`APP13`), and comment (`COM`)
+/// segments from a JPEG byte stream without re-encoding image DCT blocks.
+pub fn strip_jpeg_exif(jpeg_bytes: &[u8]) -> Option<Vec<u8>> {
+    if jpeg_bytes.len() < 4 || jpeg_bytes[0] != 0xFF || jpeg_bytes[1] != 0xD8 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(jpeg_bytes.len());
+    out.extend_from_slice(&[0xFF, 0xD8]);
+    let mut pos = 2;
+    let mut stripped_any = false;
+
+    while pos + 4 <= jpeg_bytes.len() {
+        if jpeg_bytes[pos] != 0xFF {
+            return None;
+        }
+        let marker = jpeg_bytes[pos + 1];
+        // SOS (Start of Scan) or EOI: copy remaining entropy-coded image stream verbatim
+        if marker == 0xDA || marker == 0xD9 {
+            out.extend_from_slice(&jpeg_bytes[pos..]);
+            break;
+        }
+        // Standalone markers without length
+        if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            out.extend_from_slice(&jpeg_bytes[pos..pos + 2]);
+            pos += 2;
+            continue;
+        }
+        let seg_len = u16::from_be_bytes([jpeg_bytes[pos + 2], jpeg_bytes[pos + 3]]) as usize;
+        if seg_len < 2 || pos + 2 + seg_len > jpeg_bytes.len() {
+            return None;
+        }
+        // Strip APP1 (EXIF/XMP), APP2, APP12, APP13 (Photoshop/IPTC), and COM (0xFE)
+        if matches!(marker, 0xE1 | 0xE2 | 0xEC | 0xED | 0xFE) {
+            stripped_any = true;
+        } else {
+            out.extend_from_slice(&jpeg_bytes[pos..pos + 2 + seg_len]);
+        }
+        pos += 2 + seg_len;
+    }
+
+    if stripped_any {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// Checks if the image should be downscaled according to `scale_factor`, `max_width`, or `max_height`.
@@ -216,10 +431,10 @@ fn maybe_downscale(
         }
     }
 
-    if let Some(max_h) = config.max_height {
-        if target_h > max_h as f64 && max_h > 0 {
-            let ratio = max_h as f64 / target_h;
-            target_h = max_h as f64;
+    if let Some(max_height) = config.max_height {
+        if target_h > max_height as f64 && max_height > 0 {
+            let ratio = max_height as f64 / target_h;
+            target_h = max_height as f64;
             target_w *= ratio;
         }
     }
@@ -368,8 +583,9 @@ fn run_oxipng(png_bytes: &[u8], config: &AppConfig) -> Result<Vec<u8>> {
     let mut opts = Options::from_preset(config.oxipng_level.min(6));
     if config.strip_metadata {
         opts.strip = StripChunks::Safe;
+    } else {
+        opts.strip = StripChunks::None;
     }
-    // Use Libdeflater for fast real-time clipboard optimization unless level 6 is requested
     if config.oxipng_level < 6 {
         opts.deflate = Deflaters::Libdeflater {
             compression: (config.oxipng_level.clamp(1, 5) * 2 + 2).min(12),

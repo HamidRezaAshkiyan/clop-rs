@@ -312,13 +312,15 @@ dependencies = [
 
 [[package]]
 name = "clop-rs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
  "clap",
+ "core-graphics",
  "dirs 5.0.1",
  "env_logger",
+ "foreign-types",
  "image",
  "imagequant",
  "log",
@@ -327,6 +329,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "oxipng",
  "png 0.17.16",
+ "raw-window-handle",
  "serde",
  "tao",
  "tempfile",

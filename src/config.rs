@@ -38,8 +38,14 @@ pub struct AppConfig {
     pub max_height: Option<u32>,
     /// Optional downscale factor (e.g. 2 to halve Retina 2x screenshots to 1x).
     pub scale_factor: Option<f32>,
-    /// Strip all non-essential PNG metadata chunks (EXIF, tEXt, iCCP, etc.).
+    /// Strip EXIF, GPS, camera metadata, and non-essential PNG/JPEG metadata chunks.
     pub strip_metadata: bool,
+    /// Show the floating HUD panel with progress bar, size reduction, and Revert button.
+    pub show_floating_hud: bool,
+    /// Automatically watch and optimize new images saved to the user's Downloads folder.
+    pub watch_downloads: bool,
+    /// Optional custom directory to watch instead of the OS default Downloads directory.
+    pub downloads_dir: Option<PathBuf>,
     /// Run without a system tray / menu bar icon.
     pub headless: bool,
 }
@@ -47,7 +53,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            poll_interval_ms: 400,
+            poll_interval_ms: 350,
             mode: OptimizationMode::Smart,
             quality_min: 65,
             quality_max: 95,
@@ -56,6 +62,9 @@ impl Default for AppConfig {
             max_height: None,
             scale_factor: None,
             strip_metadata: true,
+            show_floating_hud: true,
+            watch_downloads: false,
+            downloads_dir: None,
             headless: false,
         }
     }
@@ -92,6 +101,11 @@ impl AppConfig {
         Ok(path)
     }
 
+    /// Returns the effective Downloads folder to watch.
+    pub fn effective_downloads_dir(&self) -> Option<PathBuf> {
+        self.downloads_dir.clone().or_else(dirs::download_dir)
+    }
+
     /// Applies CLI flag overrides on top of the loaded configuration.
     pub fn apply_cli(&mut self, cli: &Cli) {
         if let Some(interval) = cli.interval_ms {
@@ -118,6 +132,22 @@ impl AppConfig {
         if let Some(sf) = cli.scale_factor {
             self.scale_factor = Some(sf);
         }
+        if cli.strip_exif {
+            self.strip_metadata = true;
+        }
+        if cli.keep_exif {
+            self.strip_metadata = false;
+        }
+        if cli.watch_downloads {
+            self.watch_downloads = true;
+        }
+        if let Some(ref dir) = cli.downloads_dir {
+            self.downloads_dir = Some(dir.clone());
+            self.watch_downloads = true;
+        }
+        if cli.no_hud {
+            self.show_floating_hud = false;
+        }
         if cli.headless {
             self.headless = true;
         }
@@ -129,24 +159,44 @@ impl AppConfig {
 #[command(
     name = "clop-rs",
     version,
-    about = "Minimal-footprint cross-platform (macOS & Windows) clipboard image optimizer inspired by Clop."
+    about = "Minimal-footprint cross-platform (macOS & Windows) clipboard & Downloads image optimizer inspired by Clop."
 )]
 pub struct Cli {
     /// Run as a pure headless background daemon without a system tray / menu bar icon.
     #[arg(long)]
     pub headless: bool,
 
+    /// Disable the floating HUD panel notification.
+    #[arg(long)]
+    pub no_hud: bool,
+
     /// Optimize the current clipboard image once and exit immediately.
     #[arg(long, short = '1')]
     pub once: bool,
 
-    /// Use strict lossless optimization only (disables perceptual palette quantization).
+    /// Revert the last clipboard optimization (if backed up) or specify via tray/HUD.
     #[arg(long)]
     pub lossless: bool,
 
     /// Optimization mode (`smart` or `lossless`).
     #[arg(long, value_enum)]
     pub mode: Option<OptimizationMode>,
+
+    /// Strip EXIF, GPS, and camera metadata chunks (enabled by default).
+    #[arg(long)]
+    pub strip_exif: bool,
+
+    /// Preserve EXIF and metadata chunks during optimization.
+    #[arg(long)]
+    pub keep_exif: bool,
+
+    /// Automatically watch and optimize new images in the Downloads folder.
+    #[arg(long)]
+    pub watch_downloads: bool,
+
+    /// Custom directory to watch for new images (implies `--watch-downloads`).
+    #[arg(long)]
+    pub downloads_dir: Option<PathBuf>,
 
     /// Target maximum quality (10-100) in smart mode (default: 95).
     #[arg(long, short = 'q')]
@@ -168,7 +218,7 @@ pub struct Cli {
     #[arg(long)]
     pub scale_factor: Option<f32>,
 
-    /// Clipboard polling interval in milliseconds (default: 400).
+    /// Clipboard polling interval in milliseconds (default: 350).
     #[arg(long)]
     pub interval_ms: Option<u64>,
 

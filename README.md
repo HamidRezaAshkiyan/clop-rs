@@ -6,13 +6,19 @@ Whenever you copy an image or screenshot to your clipboard, `clop-rs` silently o
 
 ---
 
-## Why `clop-rs`?
+## Key Features
 
-- **Cross-Platform (macOS & Windows)**: Works natively on both macOS (`NSPasteboard`) and Windows (`Win32 Clipboard`).
-- **Ultra-Minimal Footprint**:
-  - **Zero-allocation idle check**: Uses OS clipboard sequence counters (`NSPasteboard.changeCount` on macOS, `GetClipboardSequenceNumber()` on Windows) so polling while idle takes **0% CPU** and **0 allocations**.
-  - **Tiny memory usage**: ~4–8 MB RSS in the background.
-  - **Single standalone binary**: ~2.5 MB stripped native executable with zero external CLI tool dependencies (`pngquant`, `oxipng`, etc. are compiled directly into the binary).
+- **Floating HUD Panel (Like Clop)**:
+  - Automatically pops up a sleek, non-intrusive floating HUD panel in the bottom-right corner whenever an image is optimized.
+  - Shows a **live progress bar** during optimization, a **64×64 thumbnail preview**, the exact **Before → After size & percentage saved** (e.g. `445.7 KB -> 103.7 KB (-76.7%)`), an **`[EXIF]`** badge when metadata is stripped, and a one-click **`[REVERT]`** button to immediately restore the original unoptimized image.
+- **One-Click Revert**:
+  - Click **`[REVERT]`** right on the floating HUD panel (or **"Revert Last Optimization"** in the Menu Bar / System Tray menu) to restore the original unoptimized image back to the clipboard or Downloads folder.
+- **Automatic Downloads Folder Optimization**:
+  - Toggle **"Auto-Optimize Downloads Folder"** in the Menu Bar / System Tray (or pass `--watch-downloads`) to automatically optimize newly downloaded `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, and `.tiff` images in `~/Downloads`.
+- **EXIF & Metadata Stripping**:
+  - Toggle **"Strip EXIF & Metadata"** in the Menu Bar / System Tray (or `--strip-exif` / `--keep-exif` on the CLI) to strip camera EXIF, GPS coordinates, XMP/IPTC, and PNG text/time chunks.
+- **Cross-Platform (macOS & Windows) & Ultra-Minimal Footprint**:
+  - Uses O(1) OS clipboard sequence counters (`NSPasteboard.changeCount` on macOS, `GetClipboardSequenceNumber()` on Windows) for **0% idle CPU** and **~2.1 MB** standalone binary size.
 - **Direct Native PNG Clipboard Preservation**:
   - Writes the exact compressed PNG stream directly to `public.png` on macOS and the registered `PNG` clipboard format (alongside `CF_DIBV5`) on Windows, so pasting apps receive the exact quantized + deflate-optimized PNG bytes without re-encoding.
 - **Two Optimization Modes**:

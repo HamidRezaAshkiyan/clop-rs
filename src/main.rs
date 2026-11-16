@@ -7,6 +7,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use clop_rs::clipboard::ClipboardMonitor;
 use clop_rs::config::{AppConfig, Cli, Commands};
+use clop_rs::downloads::DownloadsWatcher;
 use clop_rs::optimizer::{self, format_bytes};
 use clop_rs::{platform, tray};
 use std::thread;
@@ -31,13 +32,19 @@ fn main() -> Result<()> {
                 for path in paths {
                     let res = optimizer::optimize_file(path, output.as_deref(), &config)?;
                     if res.was_modified {
+                        let exif_tag = if res.exif_stripped {
+                            " [EXIF stripped]"
+                        } else {
+                            ""
+                        };
                         println!(
-                            "✓ {}: {} -> {} (-{:.1}%, {}ms)",
+                            "✓ {}: {} -> {} (-{:.1}%, {}ms){}",
                             path.display(),
                             format_bytes(res.original_size),
                             format_bytes(res.optimized_size),
                             res.saved_percent(),
-                            res.elapsed.as_millis()
+                            res.elapsed.as_millis(),
+                            exif_tag
                         );
                     } else {
                         println!(
@@ -120,22 +127,36 @@ fn main() -> Result<()> {
         return run_headless_daemon(config);
     }
 
-    // Default: lightweight native Menu Bar (macOS) / System Tray (Windows) mode
+    // Default: native Menu Bar (macOS) / System Tray (Windows) + Floating HUD Panel
     tray::run_with_tray(config)
 }
 
 fn run_headless_daemon(config: AppConfig) -> Result<()> {
     log::info!(
-        "clop-rs running in headless daemon mode (mode={:?}, interval={}ms)",
+        "clop-rs running in headless daemon mode (mode={:?}, strip_exif={}, watch_downloads={}, interval={}ms)",
         config.mode,
+        config.strip_metadata,
+        config.watch_downloads,
         config.poll_interval_ms
     );
     let mut monitor = ClipboardMonitor::new();
+    let mut downloads = DownloadsWatcher::new(if config.watch_downloads {
+        config.effective_downloads_dir()
+    } else {
+        None
+    });
     let interval = Duration::from_millis(config.poll_interval_ms.max(50));
 
     loop {
         if let Err(err) = monitor.poll_once(&config, false) {
             log::debug!("Clipboard poll error: {}", err);
+        }
+        if config.watch_downloads {
+            if let Some(pending) = downloads.inspect_next_file(&config) {
+                if let Err(err) = downloads.optimize_pending_file(pending, &config) {
+                    log::debug!("Downloads optimization error: {}", err);
+                }
+            }
         }
         thread::sleep(interval);
     }

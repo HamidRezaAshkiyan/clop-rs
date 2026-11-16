@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::optimizer::{self, format_bytes};
+use crate::optimizer::{self, encode_rgba_png, format_bytes, generate_thumbnail};
 use crate::platform;
 use anyhow::{Context, Result};
 use arboard::{Clipboard, ImageData};
@@ -8,27 +8,37 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-/// Summary of a single clipboard optimization event.
+/// Summary of a single optimization event (clipboard or file).
 #[derive(Debug, Clone)]
 pub struct OptimizationSummary {
+    pub source_label: String,
     pub width: u32,
     pub height: u32,
     pub original_size: usize,
     pub optimized_size: usize,
     pub saved_bytes: usize,
     pub saved_percent: f64,
+    pub exif_stripped: bool,
     pub elapsed: Duration,
+    /// 64x64 RGBA thumbnail for the Floating HUD Panel.
+    pub thumbnail_64: Vec<u8>,
 }
 
 impl OptimizationSummary {
     /// Human-readable one-line status string, e.g. `412.0 KB -> 108.4 KB (-73.7%, 42ms)`.
     pub fn display_short(&self) -> String {
+        let exif_tag = if self.exif_stripped {
+            " [EXIF stripped]"
+        } else {
+            ""
+        };
         format!(
-            "{} -> {} (-{:.1}%, {}ms)",
+            "{} -> {} (-{:.1}%, {}ms){}",
             format_bytes(self.original_size),
             format_bytes(self.optimized_size),
             self.saved_percent,
-            self.elapsed.as_millis()
+            self.elapsed.as_millis(),
+            exif_tag
         )
     }
 }
@@ -59,13 +69,34 @@ impl SessionStats {
     }
 }
 
-/// Stateful cross-platform clipboard monitor with loop-prevention hash tracking.
+/// Backup of the original unoptimized clipboard image so the user can click "Revert".
+#[derive(Debug, Clone)]
+pub struct ClipboardBackup {
+    pub width: u32,
+    pub height: u32,
+    pub original_rgba: Vec<u8>,
+    pub original_png: Option<Vec<u8>>,
+    pub original_size: usize,
+}
+
+/// New clipboard image detected and ready to be optimized.
+pub struct PendingClipboardImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba_bytes: Vec<u8>,
+    pub raw_png: Option<Vec<u8>>,
+    pub estimated_size: usize,
+    pub thumbnail_64: Vec<u8>,
+}
+
+/// Stateful cross-platform clipboard monitor with loop-prevention hash tracking and Revert support.
 pub struct ClipboardMonitor {
     clipboard: Option<Clipboard>,
     last_change_count: Option<i64>,
-    seen_rgba_hashes: [u64; 4],
-    seen_png_hashes: [u64; 4],
+    seen_rgba_hashes: [u64; 8],
+    seen_png_hashes: [u64; 8],
     hash_cursor: usize,
+    pub last_backup: Option<ClipboardBackup>,
     pub stats: SessionStats,
 }
 
@@ -81,82 +112,106 @@ impl ClipboardMonitor {
         Self {
             clipboard,
             last_change_count: None,
-            seen_rgba_hashes: [0; 4],
-            seen_png_hashes: [0; 4],
+            seen_rgba_hashes: [0; 8],
+            seen_png_hashes: [0; 8],
             hash_cursor: 0,
+            last_backup: None,
             stats: SessionStats::default(),
         }
     }
 
-    /// Checks the clipboard once. If a new unoptimized image is found, optimizes it in-place
-    /// on the clipboard and returns `Ok(Some(OptimizationSummary))`.
-    ///
-    /// When `force` is `true`, bypasses the change-counter and hash deduplication checks.
-    pub fn poll_once(
-        &mut self,
-        config: &AppConfig,
-        force: bool,
-    ) -> Result<Option<OptimizationSummary>> {
-        // Fast O(1) OS clipboard sequence check (zero allocations when idle)
+    /// Step 1: Checks if a new unoptimized image is on the clipboard.
+    /// If found, returns `Some(PendingClipboardImage)` so callers (like the Floating HUD)
+    /// can immediately display the "Optimizing..." progress bar before heavy compression runs.
+    pub fn inspect_new_image(&mut self, force: bool) -> Option<PendingClipboardImage> {
         let current_change = platform::clipboard_change_count();
         if !force {
             if let (Some(curr), Some(prev)) = (current_change, self.last_change_count) {
                 if curr == prev {
-                    return Ok(None);
+                    return None;
                 }
             }
         }
         self.last_change_count = current_change;
 
-        // 1. Check if raw PNG data is available on the clipboard
         let raw_png = platform::read_raw_clipboard_png();
         if let Some(ref png_bytes) = raw_png {
             let png_hash = compute_bytes_hash(png_bytes);
             if !force && self.is_seen_png_hash(png_hash) {
-                return Ok(None);
+                return None;
             }
         }
 
-        // 2. Read RGBA image pixels from clipboard (via arboard, or decode from raw_png)
         if self.clipboard.is_none() {
             self.clipboard = Clipboard::new().ok();
         }
 
-        let (width, height, rgba_bytes) = match self.read_clipboard_rgba(&raw_png) {
-            Some(img) => img,
-            None => return Ok(None),
-        };
-
+        let (width, height, rgba_bytes) = self.read_clipboard_rgba(&raw_png)?;
         let input_rgba_hash = compute_image_hash(width, height, &rgba_bytes);
         if !force && self.is_seen_rgba_hash(input_rgba_hash) {
-            return Ok(None);
+            return None;
         }
 
-        // Record input hashes so we never re-process this exact image even if optimization is a no-op
         self.record_rgba_hash(input_rgba_hash);
         if let Some(ref png_bytes) = raw_png {
             self.record_png_hash(compute_bytes_hash(png_bytes));
         }
 
-        // 3. Optimize the image in memory
-        let optimized =
-            optimizer::optimize_rgba(width, height, &rgba_bytes, raw_png.as_deref(), config)
-                .context("Clipboard image optimization failed")?;
+        let estimated_size = raw_png
+            .as_ref()
+            .map(|b| b.len())
+            .unwrap_or_else(|| (width as usize * height as usize).saturating_mul(2));
+        let thumbnail_64 = generate_thumbnail(width, height, &rgba_bytes, 64);
+
+        Some(PendingClipboardImage {
+            width,
+            height,
+            rgba_bytes,
+            raw_png,
+            estimated_size,
+            thumbnail_64,
+        })
+    }
+
+    /// Step 2: Runs the optimization pipeline on a `PendingClipboardImage` and updates the clipboard.
+    pub fn optimize_pending(
+        &mut self,
+        pending: PendingClipboardImage,
+        config: &AppConfig,
+    ) -> Result<Option<OptimizationSummary>> {
+        let optimized = optimizer::optimize_rgba(
+            pending.width,
+            pending.height,
+            &pending.rgba_bytes,
+            pending.raw_png.as_deref(),
+            config,
+        )
+        .context("Clipboard image optimization failed")?;
 
         if !optimized.was_modified {
             log::debug!(
                 "Clipboard image ({}x{}, {}) is already optimal",
-                width,
-                height,
+                pending.width,
+                pending.height,
                 format_bytes(optimized.original_size)
             );
             return Ok(None);
         }
 
-        // 4. Write the optimized image back to the clipboard
+        // Save backup of original unoptimized image for one-click Revert
+        let original_png = pending
+            .raw_png
+            .or_else(|| encode_rgba_png(pending.width, pending.height, &pending.rgba_bytes).ok());
+        self.last_backup = Some(ClipboardBackup {
+            width: pending.width,
+            height: pending.height,
+            original_rgba: pending.rgba_bytes,
+            original_png,
+            original_size: optimized.original_size,
+        });
+
         self.write_optimized_to_clipboard(&optimized)?;
 
-        // 5. Record post-write hashes and updated OS change count to prevent self-triggering loops
         let output_rgba_hash =
             compute_image_hash(optimized.width, optimized.height, &optimized.rgba_bytes);
         let output_png_hash = compute_bytes_hash(&optimized.png_bytes);
@@ -165,13 +220,16 @@ impl ClipboardMonitor {
         self.last_change_count = platform::clipboard_change_count();
 
         let summary = OptimizationSummary {
+            source_label: "Clipboard".to_string(),
             width: optimized.width,
             height: optimized.height,
             original_size: optimized.original_size,
             optimized_size: optimized.optimized_size,
             saved_bytes: optimized.saved_bytes(),
             saved_percent: optimized.saved_percent(),
+            exif_stripped: optimized.exif_stripped,
             elapsed: optimized.elapsed,
+            thumbnail_64: pending.thumbnail_64,
         };
 
         self.stats.images_optimized += 1;
@@ -187,6 +245,70 @@ impl ClipboardMonitor {
         );
 
         Ok(Some(summary))
+    }
+
+    /// Checks and optimizes the clipboard in a single call.
+    pub fn poll_once(
+        &mut self,
+        config: &AppConfig,
+        force: bool,
+    ) -> Result<Option<OptimizationSummary>> {
+        let Some(pending) = self.inspect_new_image(force) else {
+            return Ok(None);
+        };
+        self.optimize_pending(pending, config)
+    }
+
+    /// Reverts the last clipboard optimization, restoring the exact original unoptimized image
+    /// back to the system clipboard and marking its hash as seen so it won't be re-optimized.
+    pub fn revert_last(&mut self) -> Result<Option<usize>> {
+        let Some(backup) = self.last_backup.take() else {
+            return Ok(None);
+        };
+
+        let rgba_hash = compute_image_hash(backup.width, backup.height, &backup.original_rgba);
+        self.record_rgba_hash(rgba_hash);
+        if let Some(ref png_bytes) = backup.original_png {
+            self.record_png_hash(compute_bytes_hash(png_bytes));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(ref png_bytes) = backup.original_png {
+                if platform::write_raw_clipboard_png(png_bytes).unwrap_or(false) {
+                    self.last_change_count = platform::clipboard_change_count();
+                    log::info!(
+                        "Reverted clipboard image to original ({})",
+                        format_bytes(backup.original_size)
+                    );
+                    return Ok(Some(backup.original_size));
+                }
+            }
+        }
+
+        if let Some(ref mut cb) = self.clipboard {
+            let img_data = ImageData {
+                width: backup.width as usize,
+                height: backup.height as usize,
+                bytes: Cow::Borrowed(&backup.original_rgba),
+            };
+            cb.set_image(img_data)
+                .context("Failed to restore original image to clipboard")?;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(ref png_bytes) = backup.original_png {
+                let _ = platform::write_raw_clipboard_png(png_bytes);
+            }
+        }
+
+        self.last_change_count = platform::clipboard_change_count();
+        log::info!(
+            "Reverted clipboard image to original ({})",
+            format_bytes(backup.original_size)
+        );
+        Ok(Some(backup.original_size))
     }
 
     fn read_clipboard_rgba(&mut self, raw_png: &Option<Vec<u8>>) -> Option<(u32, u32, Vec<u8>)> {
@@ -211,8 +333,6 @@ impl ClipboardMonitor {
     ) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
-            // On macOS, writing `public.png` directly to NSPasteboard preserves 100% of our
-            // indexed palette + oxipng compression without `arboard` re-encoding to 32-bit PNG.
             if platform::write_raw_clipboard_png(&optimized.png_bytes).unwrap_or(false) {
                 return Ok(());
             }
@@ -230,8 +350,6 @@ impl ClipboardMonitor {
 
         #[cfg(target_os = "windows")]
         {
-            // On Windows, also attach the registered `"PNG"` clipboard format alongside `CF_DIBV5`
-            // so browsers, Slack, Discord, Teams, and Electron apps read the compressed PNG bytes.
             let _ = platform::write_raw_clipboard_png(&optimized.png_bytes);
         }
 
@@ -247,17 +365,18 @@ impl ClipboardMonitor {
     }
 
     pub fn record_rgba_hash(&mut self, hash: u64) {
-        self.seen_rgba_hashes[self.hash_cursor % self.seen_rgba_hashes.len()] = hash;
+        let len = self.seen_rgba_hashes.len();
+        self.seen_rgba_hashes[self.hash_cursor % len] = hash;
         self.hash_cursor = self.hash_cursor.wrapping_add(1);
     }
 
     pub fn record_png_hash(&mut self, hash: u64) {
-        self.seen_png_hashes[self.hash_cursor % self.seen_png_hashes.len()] = hash;
+        let len = self.seen_png_hashes.len();
+        self.seen_png_hashes[self.hash_cursor % len] = hash;
     }
 }
 
 /// Computes a fast 64-bit hash of image dimensions and pixel data.
-/// For large images (>64 KB), samples header, footer, and strided blocks to stay sub-millisecond.
 pub fn compute_image_hash(width: u32, height: u32, rgba_bytes: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
     width.hash(&mut hasher);
@@ -267,7 +386,6 @@ pub fn compute_image_hash(width: u32, height: u32, rgba_bytes: &[u8]) -> u64 {
     if rgba_bytes.len() <= 65_536 {
         rgba_bytes.hash(&mut hasher);
     } else {
-        // Hash first 8 KB, last 8 KB, and 256 evenly-spaced 64-byte slices across the image
         rgba_bytes[..8192].hash(&mut hasher);
         rgba_bytes[rgba_bytes.len() - 8192..].hash(&mut hasher);
         let step = (rgba_bytes.len() / 256).max(64);

@@ -1,0 +1,249 @@
+use crate::clipboard::OptimizationSummary;
+use crate::config::AppConfig;
+use crate::optimizer::{self, format_bytes, generate_thumbnail};
+use anyhow::{Context, Result};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+/// Backup of the last optimized file in the Downloads directory for one-click Revert.
+#[derive(Debug, Clone)]
+pub struct FileBackup {
+    pub path: PathBuf,
+    pub original_bytes: Vec<u8>,
+}
+
+/// Newly arrived image file in the Downloads directory ready for optimization.
+pub struct PendingDownloadFile {
+    pub path: PathBuf,
+    pub file_name: String,
+    pub original_bytes: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub thumbnail_64: Vec<u8>,
+}
+
+/// Watches the user's Downloads directory for newly added image files and optimizes them automatically.
+pub struct DownloadsWatcher {
+    watched_dir: Option<PathBuf>,
+    seen_files: HashMap<PathBuf, (SystemTime, u64)>,
+    pub last_backup: Option<FileBackup>,
+}
+
+impl Default for DownloadsWatcher {
+    fn default() -> Self {
+        Self::new(None)
+    }
+}
+
+impl DownloadsWatcher {
+    pub fn new(dir: Option<PathBuf>) -> Self {
+        let mut watcher = Self {
+            watched_dir: None,
+            seen_files: HashMap::new(),
+            last_backup: None,
+        };
+        if let Some(d) = dir {
+            watcher.set_directory(Some(d));
+        }
+        watcher
+    }
+
+    /// Updates the watched directory and snapshots existing files so only *new* or *newly modified*
+    /// files arriving after enabling the watcher are optimized.
+    pub fn set_directory(&mut self, dir: Option<PathBuf>) {
+        if self.watched_dir == dir {
+            return;
+        }
+        self.watched_dir = dir;
+        self.seen_files.clear();
+        if let Some(d) = self.watched_dir.clone() {
+            self.snapshot_existing(&d);
+        }
+    }
+
+    fn snapshot_existing(&mut self, dir: &Path) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if is_supported_image_path(&path) {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(mtime) = meta.modified() {
+                        self.seen_files.insert(path, (mtime, meta.len()));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scans the watched Downloads directory for the next new unoptimized image file.
+    pub fn inspect_next_file(&mut self, config: &AppConfig) -> Option<PendingDownloadFile> {
+        if !config.watch_downloads {
+            return None;
+        }
+        let target_dir = config.effective_downloads_dir()?;
+        if self.watched_dir.as_ref() != Some(&target_dir) {
+            self.set_directory(Some(target_dir.clone()));
+        }
+
+        let entries = fs::read_dir(&target_dir).ok()?;
+        let now = SystemTime::now();
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || !is_supported_image_path(&path) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            let len = meta.len();
+            if len == 0 || len > 50 * 1024 * 1024 {
+                continue;
+            }
+            let Ok(mtime) = meta.modified() else {
+                continue;
+            };
+
+            // Wait at least 300ms after the last write so browser downloads finish flushing
+            if let Ok(age) = now.duration_since(mtime) {
+                if age < Duration::from_millis(300) {
+                    continue;
+                }
+            }
+
+            if let Some(&(prev_mtime, prev_len)) = self.seen_files.get(&path) {
+                if prev_mtime == mtime && prev_len == len {
+                    continue;
+                }
+            }
+
+            // Mark seen before reading so unreadable/corrupt files aren't retried in a tight loop
+            self.seen_files.insert(path.clone(), (mtime, len));
+
+            let Ok(raw_bytes) = fs::read(&path) else {
+                continue;
+            };
+            let Ok(decoded) = image::load_from_memory(&raw_bytes) else {
+                continue;
+            };
+            let rgba = decoded.into_rgba8();
+            let (width, height) = rgba.dimensions();
+            let thumbnail_64 = generate_thumbnail(width, height, rgba.as_raw(), 64);
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Download")
+                .to_string();
+
+            return Some(PendingDownloadFile {
+                path,
+                file_name,
+                original_bytes: raw_bytes,
+                width,
+                height,
+                thumbnail_64,
+            });
+        }
+
+        None
+    }
+
+    /// Optimizes a pending file from the Downloads directory and stores a backup for one-click Revert.
+    pub fn optimize_pending_file(
+        &mut self,
+        pending: PendingDownloadFile,
+        config: &AppConfig,
+    ) -> Result<Option<OptimizationSummary>> {
+        let res = optimizer::optimize_file(&pending.path, None, config)?;
+        if !res.was_modified {
+            return Ok(None);
+        }
+
+        // Update seen metadata so we don't re-trigger on our own write
+        if let Ok(meta) = fs::metadata(&pending.path) {
+            if let Ok(mtime) = meta.modified() {
+                self.seen_files
+                    .insert(pending.path.clone(), (mtime, meta.len()));
+            }
+        }
+
+        self.last_backup = Some(FileBackup {
+            path: pending.path.clone(),
+            original_bytes: pending.original_bytes,
+        });
+
+        let summary = OptimizationSummary {
+            source_label: pending.file_name,
+            width: res.width,
+            height: res.height,
+            original_size: res.original_size,
+            optimized_size: res.optimized_size,
+            saved_bytes: res.saved_bytes(),
+            saved_percent: res.saved_percent(),
+            exif_stripped: res.exif_stripped,
+            elapsed: res.elapsed,
+            thumbnail_64: pending.thumbnail_64,
+        };
+
+        log::info!(
+            "Optimized Downloads image '{}': {}",
+            summary.source_label,
+            summary.display_short()
+        );
+
+        Ok(Some(summary))
+    }
+
+    /// Reverts the last optimized file in the Downloads directory back to its original unoptimized bytes.
+    pub fn revert_last(&mut self) -> Result<Option<(PathBuf, usize)>> {
+        let Some(backup) = self.last_backup.take() else {
+            return Ok(None);
+        };
+        let orig_len = backup.original_bytes.len();
+        fs::write(&backup.path, &backup.original_bytes).with_context(|| {
+            format!(
+                "Failed to restore original file at {}",
+                backup.path.display()
+            )
+        })?;
+
+        if let Ok(meta) = fs::metadata(&backup.path) {
+            if let Ok(mtime) = meta.modified() {
+                self.seen_files
+                    .insert(backup.path.clone(), (mtime, meta.len()));
+            }
+        }
+
+        log::info!(
+            "Reverted Downloads file '{}' to original ({})",
+            backup.path.display(),
+            format_bytes(orig_len)
+        );
+        Ok(Some((backup.path, orig_len)))
+    }
+}
+
+fn is_supported_image_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name.starts_with('.')
+        || name.ends_with(".crdownload")
+        || name.ends_with(".part")
+        || name.ends_with(".download")
+        || name.ends_with(".tmp")
+    {
+        return false;
+    }
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tiff"
+    )
+}
