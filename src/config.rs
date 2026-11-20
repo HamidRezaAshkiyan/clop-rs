@@ -17,6 +17,45 @@ pub enum OptimizationMode {
     Lossless,
 }
 
+/// High-level optimization preset balancing visual quality vs. file size.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum OptimizationPreset {
+    /// 100% bit-exact lossless compression (largest file size, zero visual loss).
+    Lossless,
+    /// High visual fidelity with gentle compression (ideal for photography & design assets).
+    HighQuality,
+    /// Recommended balance of visual quality and strong space savings (60-80% smaller).
+    #[default]
+    Balanced,
+    /// Maximum space savings with more aggressive compression (smallest file size).
+    SmallestSize,
+    /// User-defined quality/size slider value.
+    Custom,
+}
+
+impl OptimizationPreset {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            OptimizationPreset::Lossless => "Lossless",
+            OptimizationPreset::HighQuality => "High Quality",
+            OptimizationPreset::Balanced => "Balanced",
+            OptimizationPreset::SmallestSize => "Smallest Size",
+            OptimizationPreset::Custom => "Custom",
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OptimizationPreset::Lossless => "lossless",
+            OptimizationPreset::HighQuality => "high-quality",
+            OptimizationPreset::Balanced => "balanced",
+            OptimizationPreset::SmallestSize => "smallest-size",
+            OptimizationPreset::Custom => "custom",
+        }
+    }
+}
+
 /// Persistent configuration stored in `~/.config/clop-rs/config.toml` (macOS/Linux)
 /// or `%APPDATA%\clop-rs\config.toml` (Windows).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +65,10 @@ pub struct AppConfig {
     pub poll_interval_ms: u64,
     /// Optimization mode: `smart` (lossy palette + lossless deflate) or `lossless`.
     pub mode: OptimizationMode,
+    /// High-level quality vs. size preset (`lossless`, `high-quality`, `balanced`, `smallest-size`, `custom`).
+    pub preset: OptimizationPreset,
+    /// Unified quality-vs-size preference (10 = smallest size, 100 = highest quality).
+    pub quality_level: u8,
     /// Minimum quality for `imagequant` in smart mode (0-100).
     pub quality_min: u8,
     /// Target maximum quality for `imagequant` in smart mode (0-100).
@@ -55,6 +98,8 @@ impl Default for AppConfig {
         Self {
             poll_interval_ms: 350,
             mode: OptimizationMode::Smart,
+            preset: OptimizationPreset::Balanced,
+            quality_level: 85,
             quality_min: 65,
             quality_max: 95,
             oxipng_level: 2,
@@ -106,19 +151,138 @@ impl AppConfig {
         self.downloads_dir.clone().or_else(dirs::download_dir)
     }
 
+    /// Applies a high-level quality-vs-size preset, updating `mode`, `quality_level`,
+    /// `quality_min`, `quality_max`, and `oxipng_level`.
+    pub fn apply_preset(&mut self, preset: OptimizationPreset) {
+        self.preset = preset;
+        match preset {
+            OptimizationPreset::Lossless => {
+                self.mode = OptimizationMode::Lossless;
+                self.quality_level = 100;
+                self.quality_min = 100;
+                self.quality_max = 100;
+                self.oxipng_level = 3;
+            }
+            OptimizationPreset::HighQuality => {
+                self.mode = OptimizationMode::Smart;
+                self.quality_level = 94;
+                self.quality_min = 82;
+                self.quality_max = 98;
+                self.oxipng_level = 2;
+            }
+            OptimizationPreset::Balanced => {
+                self.mode = OptimizationMode::Smart;
+                self.quality_level = 85;
+                self.quality_min = 65;
+                self.quality_max = 95;
+                self.oxipng_level = 2;
+            }
+            OptimizationPreset::SmallestSize => {
+                self.mode = OptimizationMode::Smart;
+                self.quality_level = 50;
+                self.quality_min = 35;
+                self.quality_max = 72;
+                self.oxipng_level = 4;
+            }
+            OptimizationPreset::Custom => {
+                // Keep existing custom parameters
+                self.mode = OptimizationMode::Smart;
+            }
+        }
+    }
+
+    /// Applies a unified quality-vs-size slider value (`10` = smallest size, `100` = highest quality).
+    pub fn apply_quality_level(&mut self, level: u8) {
+        let clamped = level.clamp(10, 100);
+        self.quality_level = clamped;
+        self.mode = OptimizationMode::Smart;
+        self.preset = OptimizationPreset::Custom;
+        self.quality_max = clamped;
+        self.quality_min = clamped.saturating_sub(25).max(10);
+        self.oxipng_level = if clamped <= 55 {
+            4
+        } else if clamped <= 80 {
+            3
+        } else {
+            2
+        };
+    }
+
+    /// Effective JPEG encoder quality (35-96) derived from `quality_max`.
+    pub fn effective_jpeg_quality(&self) -> u8 {
+        self.quality_max.clamp(35, 96)
+    }
+
+    /// Effective embedded-JPEG quality inside PDFs (35-88) derived from `quality_max`.
+    pub fn effective_pdf_jpeg_quality(&self) -> u8 {
+        self.quality_max.saturating_sub(8).clamp(35, 88)
+    }
+
+    /// Effective Ghostscript `-dPDFSETTINGS` profile based on optimization mode & quality.
+    pub fn effective_gs_pdf_setting(&self) -> &'static str {
+        if self.mode == OptimizationMode::Lossless {
+            return "/prepress";
+        }
+        match self.quality_max {
+            92..=100 => "/printer",
+            75..=91 => "/ebook",
+            _ => "/screen",
+        }
+    }
+
+    /// Effective FFmpeg `libx264` / `libvpx-vp9` CRF value (lower = higher quality, larger size).
+    pub fn effective_video_crf(&self) -> &'static str {
+        if self.mode == OptimizationMode::Lossless {
+            return "18";
+        }
+        match self.quality_max {
+            92..=100 => "21",
+            80..=91 => "24",
+            65..=79 => "27",
+            _ => "30",
+        }
+    }
+
+    /// Effective macOS `h264_videotoolbox` `-q:v` quality (1-100, higher = better quality).
+    pub fn effective_videotoolbox_q(&self) -> &'static str {
+        if self.mode == OptimizationMode::Lossless {
+            return "75";
+        }
+        match self.quality_max {
+            92..=100 => "65",
+            80..=91 => "55",
+            65..=79 => "45",
+            _ => "38",
+        }
+    }
+
+    /// Short human-readable label describing the active quality/size setting (e.g., `Balanced (Q95)` or `Lossless`).
+    pub fn preset_summary_label(&self) -> String {
+        if self.mode == OptimizationMode::Lossless || self.preset == OptimizationPreset::Lossless {
+            "Lossless".to_string()
+        } else {
+            format!("{} (Q{})", self.preset.display_name(), self.quality_max)
+        }
+    }
+
     /// Applies CLI flag overrides on top of the loaded configuration.
     pub fn apply_cli(&mut self, cli: &Cli) {
         if let Some(interval) = cli.interval_ms {
             self.poll_interval_ms = interval.max(50);
         }
+        if let Some(preset) = cli.preset {
+            self.apply_preset(preset);
+        }
         if cli.lossless {
-            self.mode = OptimizationMode::Lossless;
+            self.apply_preset(OptimizationPreset::Lossless);
         } else if let Some(mode) = cli.mode {
             self.mode = mode;
+            if mode == OptimizationMode::Lossless {
+                self.preset = OptimizationPreset::Lossless;
+            }
         }
         if let Some(qmax) = cli.quality {
-            self.quality_max = qmax.clamp(10, 100);
-            self.quality_min = self.quality_min.min(self.quality_max);
+            self.apply_quality_level(qmax);
         }
         if let Some(level) = cli.oxipng_level {
             self.oxipng_level = level.min(6);
@@ -178,6 +342,14 @@ pub struct Cli {
     #[arg(long)]
     pub lossless: bool,
 
+    /// Open the Dashboard / Settings UI window immediately on startup.
+    #[arg(long)]
+    pub open_ui: bool,
+
+    /// Optimization quality-vs-size preset (`lossless`, `high-quality`, `balanced`, `smallest-size`).
+    #[arg(long, short = 'p', value_enum)]
+    pub preset: Option<OptimizationPreset>,
+
     /// Optimization mode (`smart` or `lossless`).
     #[arg(long, value_enum)]
     pub mode: Option<OptimizationMode>,
@@ -222,13 +394,27 @@ pub struct Cli {
     #[arg(long)]
     pub interval_ms: Option<u64>,
 
-    /// Optional subcommand (`file`, `config`, `autostart`).
+    /// Optional subcommand (`ui`, `file`, `history`, `config`, `autostart`, `context-menu`).
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Open the graphical Dashboard, Settings, Clipboard History & File Optimizer window.
+    Ui,
+    /// View or clear optimization history (clipboard & files).
+    History {
+        /// Show only clipboard history entries.
+        #[arg(long)]
+        clipboard: bool,
+        /// Clear all saved optimization history.
+        #[arg(long)]
+        clear: bool,
+        /// Maximum number of entries to display (default: 20).
+        #[arg(long, short = 'n', default_value_t = 20)]
+        limit: usize,
+    },
     /// Optimize one or more image, PDF, or video files on disk.
     File {
         /// Paths to files to optimize in-place (or to `--output`).

@@ -128,16 +128,42 @@ clop-rs --max-width 1920 --max-height 1080
 clop-rs --quality 85
 ```
 
-### 5. Optimize Image Files on Disk
+### 5. Open the Graphical Dashboard & Settings UI
+Click **"Open Dashboard & Settings…"** from the Menu Bar / System Tray icon, or launch directly from the terminal:
 ```bash
-# Optimize one or more files in-place
-clop-rs file screenshot1.png screenshot2.png
+clop-rs ui
+```
+The Dashboard includes:
+- **Optimize Files**: Drag & drop files or folders (or pick via native file dialog), view all supported file extensions (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`, `.pdf`, `.mp4`, `.mov`, `.mkv`, `.webm`, `.m4v`, `.avi`) with FFmpeg/Ghostscript readiness badges, optimize in parallel, and revert individual files.
+- **History**: Persistent clipboard & file optimization history showing thumbnails, before → after sizes, percentage saved, compression bars, and total space saved.
+- **Settings**: Quality vs. Size presets (**Lossless**, **High Quality**, **Balanced**, **Smallest Size**) + custom Quality ↔ Size slider (10–100), Oxipng level, resizing limits, EXIF stripping, Floating HUD, Downloads folder watcher, right-click context menu, and Launch at Login.
 
-# Optimize to a new output path
-clop-rs file input.png --output output.png
+### 6. Dedicated CLI (`clop-cli`)
+A standalone terminal binary (`clop-cli`) is included alongside `clop-rs` (with native console output on macOS, Windows, and Linux):
+```bash
+# List supported file extensions and FFmpeg / Ghostscript status
+clop-cli formats
+
+# Optimize files or directories (with preset, custom quality, dry-run, or JSON output)
+clop-cli optimize --preset smallest-size photo.jpg ./screenshots -r
+clop-cli optimize --quality 80 input.png --output output.png
+clop-cli optimize --dry-run ./images --json
+
+# Optimize current clipboard image once, or watch continuously
+clop-cli clipboard
+clop-cli clipboard --watch
+
+# View or clear clipboard & file optimization history
+clop-cli history --clipboard
+clop-cli history --clear
+
+# View or update persistent settings
+clop-cli config set preset high-quality
+clop-cli config set quality 88
+clop-cli config show
 ```
 
-### 6. Enable / Disable Launch at Login
+### 7. Enable / Disable Launch at Login
 ```bash
 # Enable auto-start (macOS LaunchAgent / Windows Startup)
 clop-rs autostart --enable

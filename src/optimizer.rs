@@ -97,14 +97,18 @@ pub fn optimize_rgba(
 
     let candidate_png = match (config.mode, already_indexed) {
         (OptimizationMode::Smart, false) => {
+            let lossless_png = run_oxipng(&baseline_png, config).ok();
             match quantize_and_oxipng(work_w, work_h, &work_rgba, config) {
-                Ok(quantized_png) => quantized_png,
+                Ok(quantized_png) => match lossless_png {
+                    Some(lp) if lp.len() < quantized_png.len() => lp,
+                    _ => quantized_png,
+                },
                 Err(err) => {
                     log::debug!(
                         "Perceptual quantization skipped ({}), falling back to lossless oxipng",
                         err
                     );
-                    run_oxipng(&baseline_png, config)?
+                    lossless_png.unwrap_or_else(|| baseline_png.clone())
                 }
             }
         }
@@ -215,7 +219,7 @@ pub fn optimize_file(
 
         let mut best_bytes = stripped_jpeg;
         if resized || config.mode == OptimizationMode::Smart {
-            let quality = config.quality_max.clamp(60, 95);
+            let quality = config.effective_jpeg_quality();
             let mut reencoded = Vec::new();
             let rgb_img = image::DynamicImage::ImageRgba8(
                 RgbaImage::from_raw(work_w, work_h, work_rgba.clone()).unwrap(),
@@ -606,6 +610,43 @@ fn run_oxipng(png_bytes: &[u8], config: &AppConfig) -> Result<Vec<u8>> {
         Ok(optimized)
     } else {
         Ok(png_bytes.to_vec())
+    }
+}
+
+/// Supported image file extensions.
+pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "tiff"];
+/// Supported document file extensions.
+pub const SUPPORTED_DOCUMENT_EXTENSIONS: &[&str] = &["pdf"];
+/// Supported video file extensions (requires FFmpeg).
+pub const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "webm", "m4v", "avi"];
+
+/// Structured summary of all supported file extensions and optional external tool availability.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SupportedFormatsInfo {
+    pub images: Vec<String>,
+    pub documents: Vec<String>,
+    pub videos: Vec<String>,
+    pub has_ffmpeg: bool,
+    pub has_ghostscript: bool,
+}
+
+/// Returns all supported file extensions grouped by category along with optional tool status.
+pub fn supported_formats_info() -> SupportedFormatsInfo {
+    SupportedFormatsInfo {
+        images: SUPPORTED_IMAGE_EXTENSIONS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+        documents: SUPPORTED_DOCUMENT_EXTENSIONS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+        videos: SUPPORTED_VIDEO_EXTENSIONS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+        has_ffmpeg: crate::video::find_ffmpeg().is_some(),
+        has_ghostscript: crate::pdf::find_ghostscript().is_some(),
     }
 }
 

@@ -160,11 +160,8 @@ pub fn optimize_video_file(
     ));
     let _ = fs::remove_file(&tmp_path);
 
-    let crf = match config.quality_max {
-        90..=100 => "23",
-        75..=89 => "26",
-        _ => "28",
-    };
+    let crf = config.effective_video_crf();
+    let vt_q = config.effective_videotoolbox_q();
 
     // Build optional scale filter
     let scale_filter = build_video_scale_filter(config);
@@ -176,6 +173,7 @@ pub fn optimize_video_file(
         &tmp_path,
         container_ext,
         crf,
+        vt_q,
         scale_filter.as_deref(),
         config.strip_metadata,
         false,
@@ -186,6 +184,7 @@ pub fn optimize_video_file(
             &tmp_path,
             container_ext,
             crf,
+            vt_q,
             scale_filter.as_deref(),
             config.strip_metadata,
             true,
@@ -245,6 +244,7 @@ fn run_ffmpeg_encode(
     output: &Path,
     container_ext: &str,
     crf: &str,
+    vt_q: &str,
     scale_filter: Option<&str>,
     strip_metadata: bool,
     use_videotoolbox: bool,
@@ -260,7 +260,7 @@ fn run_ffmpeg_encode(
     if container_ext == "webm" {
         cmd.args(["-c:v", "libvpx-vp9", "-crf", crf, "-b:v", "0"]);
     } else if use_videotoolbox {
-        cmd.args(["-c:v", "h264_videotoolbox", "-q:v", "55", "-tag:v", "avc1"]);
+        cmd.args(["-c:v", "h264_videotoolbox", "-q:v", vt_q, "-tag:v", "avc1"]);
     } else {
         cmd.args([
             "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-pix_fmt", "yuv420p",

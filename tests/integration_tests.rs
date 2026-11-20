@@ -351,3 +351,216 @@ fn test_media_and_video_path_detection() {
     assert!(!is_supported_media_path(Path::new("video.mp4.crdownload")));
     assert!(!is_supported_media_path(Path::new(".hidden.png")));
 }
+
+#[test]
+fn test_quality_presets_and_slider_mapping() {
+    use clop_rs::config::OptimizationPreset;
+
+    let mut cfg = AppConfig::default();
+
+    cfg.apply_preset(OptimizationPreset::Lossless);
+    assert_eq!(cfg.mode, OptimizationMode::Lossless);
+    assert_eq!(cfg.effective_gs_pdf_setting(), "/prepress");
+    assert_eq!(cfg.effective_video_crf(), "18");
+
+    cfg.apply_preset(OptimizationPreset::HighQuality);
+    assert_eq!(cfg.mode, OptimizationMode::Smart);
+    assert_eq!(cfg.effective_gs_pdf_setting(), "/printer");
+    assert_eq!(cfg.effective_video_crf(), "21");
+    let hq_jpeg = cfg.effective_jpeg_quality();
+
+    cfg.apply_preset(OptimizationPreset::SmallestSize);
+    assert_eq!(cfg.mode, OptimizationMode::Smart);
+    assert_eq!(cfg.effective_gs_pdf_setting(), "/screen");
+    assert_eq!(cfg.effective_video_crf(), "27");
+    let small_jpeg = cfg.effective_jpeg_quality();
+    assert!(
+        small_jpeg < hq_jpeg,
+        "SmallestSize JPEG quality ({}) should be lower than HighQuality ({})",
+        small_jpeg,
+        hq_jpeg
+    );
+
+    // Custom slider at 40 (aggressive size) vs 95 (high quality)
+    cfg.apply_quality_level(40);
+    assert_eq!(cfg.preset, OptimizationPreset::Custom);
+    assert_eq!(cfg.quality_max, 40);
+    assert_eq!(cfg.effective_video_crf(), "30");
+
+    // Verify JPEG file compression produces strictly smaller files with SmallestSize than HighQuality
+    let dir = tempdir().expect("create tempdir");
+    let hq_in = dir.path().join("photo_hq.jpg");
+    let hq_out = dir.path().join("photo_hq_out.jpg");
+    let small_out = dir.path().join("photo_small_out.jpg");
+
+    let rgba = generate_synthetic_screenshot(320, 240);
+    let rgb =
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(320, 240, rgba).expect("rgba"))
+            .into_rgb8();
+    let mut raw_jpg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut raw_jpg, 98)
+        .encode_image(&rgb)
+        .expect("encode jpg");
+    std::fs::write(&hq_in, &raw_jpg).unwrap();
+
+    let mut hq_cfg = AppConfig::default();
+    hq_cfg.apply_preset(OptimizationPreset::HighQuality);
+    let res_hq = optimize_file(&hq_in, Some(&hq_out), &hq_cfg).unwrap();
+
+    let mut small_cfg = AppConfig::default();
+    small_cfg.apply_preset(OptimizationPreset::SmallestSize);
+    let res_small = optimize_file(&hq_in, Some(&small_out), &small_cfg).unwrap();
+
+    assert!(
+        res_small.optimized_size < res_hq.optimized_size,
+        "SmallestSize JPEG ({}) should be strictly smaller than HighQuality JPEG ({})",
+        res_small.optimized_size,
+        res_hq.optimized_size
+    );
+}
+
+#[test]
+fn test_optimization_history_persistence_and_stats() {
+    use clop_rs::clipboard::OptimizationSummary;
+    use clop_rs::history::{HistorySource, OptimizationHistory};
+
+    let dir = tempdir().expect("create tempdir");
+    let hist_path = dir.path().join("history.json");
+
+    let mut history = OptimizationHistory::default();
+    let cfg = AppConfig::default();
+
+    let clip_summary = OptimizationSummary {
+        source_label: "Clipboard".to_string(),
+        width: 1920,
+        height: 1080,
+        original_size: 1_000_000,
+        optimized_size: 250_000,
+        saved_bytes: 750_000,
+        saved_percent: 75.0,
+        exif_stripped: true,
+        elapsed: Duration::from_millis(45),
+        thumbnail_64: vec![128u8; 64 * 64 * 4],
+    };
+    let entry1 = history.record_summary(HistorySource::Clipboard, &clip_summary, None, &cfg);
+    assert!(entry1
+        .thumbnail_data_url
+        .as_deref()
+        .is_some_and(|s| s.starts_with("data:image/png;base64,")));
+
+    let file_summary = OptimizationSummary {
+        source_label: "report.pdf".to_string(),
+        width: 0,
+        height: 0,
+        original_size: 500_000,
+        optimized_size: 250_000,
+        saved_bytes: 250_000,
+        saved_percent: 50.0,
+        exif_stripped: false,
+        elapsed: Duration::from_millis(120),
+        thumbnail_64: Vec::new(),
+    };
+    history.record_summary(
+        HistorySource::File,
+        &file_summary,
+        Some(std::path::Path::new("/tmp/report.pdf")),
+        &cfg,
+    );
+
+    history.save_to_path(&hist_path).expect("save history");
+    let loaded = OptimizationHistory::load_from_path(&hist_path).expect("load history");
+    assert_eq!(loaded.entries.len(), 2);
+    // Newest first
+    assert_eq!(loaded.entries[0].label, "report.pdf");
+    assert_eq!(loaded.entries[1].label, "Clipboard");
+
+    let stats = loaded.stats();
+    assert_eq!(stats.total_items, 2);
+    assert_eq!(stats.clipboard_items, 1);
+    assert_eq!(stats.file_items, 1);
+    assert_eq!(stats.total_original_bytes, 1_500_000);
+    assert_eq!(stats.total_optimized_bytes, 500_000);
+    assert_eq!(stats.total_saved_bytes, 1_000_000);
+    assert!((stats.overall_saved_percent - 66.666).abs() < 0.1);
+}
+
+#[test]
+fn test_supported_formats_and_file_inspection() {
+    use clop_rs::optimizer::supported_formats_info;
+    use clop_rs::ui::{expand_paths, inspect_file_info};
+
+    let info = supported_formats_info();
+    assert!(info.images.contains(&"png".to_string()));
+    assert!(info.images.contains(&"jpg".to_string()));
+    assert!(info.documents.contains(&"pdf".to_string()));
+    assert!(info.videos.contains(&"mp4".to_string()));
+
+    let dir = tempdir().expect("create tempdir");
+    let img_path = dir.path().join("photo.png");
+    let txt_path = dir.path().join("notes.txt");
+    std::fs::write(&img_path, b"dummy").unwrap();
+    std::fs::write(&txt_path, b"hello").unwrap();
+
+    let img_info = inspect_file_info(&img_path);
+    assert!(img_info.supported);
+    assert_eq!(img_info.category, "image");
+
+    let txt_info = inspect_file_info(&txt_path);
+    assert!(!txt_info.supported);
+    assert_eq!(txt_info.category, "unsupported");
+
+    // Expanding a directory only picks up supported media files
+    let expanded = expand_paths(&[dir.path().to_path_buf()]);
+    assert_eq!(expanded.len(), 1);
+    assert_eq!(expanded[0], img_path);
+}
+
+#[test]
+fn test_clop_cli_formats_and_optimize() {
+    use std::process::Command;
+
+    let cli_bin = env!("CARGO_BIN_EXE_clop-cli");
+
+    // 1. Test `clop-cli formats --json`
+    let out = Command::new(cli_bin)
+        .args(["formats", "--json"])
+        .output()
+        .expect("run clop-cli formats");
+    assert!(out.status.success(), "clop-cli formats failed");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("parse formats json");
+    assert!(parsed["images"].as_array().unwrap().len() >= 5);
+    assert!(!parsed["documents"].as_array().unwrap().is_empty());
+    assert!(parsed["videos"].as_array().unwrap().len() >= 4);
+
+    // 2. Test `clop-cli optimize --preset smallest-size --json <file>`
+    let dir = tempdir().expect("create tempdir");
+    let input_path = dir.path().join("cli_test.png");
+    let output_path = dir.path().join("cli_test_out.png");
+    let rgba = generate_synthetic_screenshot(240, 180);
+    let raw_png = encode_rgba_png(240, 180, &rgba).expect("encode PNG");
+    std::fs::write(&input_path, &raw_png).unwrap();
+
+    let opt_out = Command::new(cli_bin)
+        .args([
+            "optimize",
+            "--preset",
+            "smallest-size",
+            "--output",
+            output_path.to_str().unwrap(),
+            "--json",
+            input_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run clop-cli optimize");
+    assert!(
+        opt_out.status.success(),
+        "clop-cli optimize failed: {}",
+        String::from_utf8_lossy(&opt_out.stderr)
+    );
+    let opt_json: serde_json::Value =
+        serde_json::from_slice(&opt_out.stdout).expect("parse optimize json");
+    assert_eq!(opt_json["files_modified"].as_u64(), Some(1));
+    assert!(opt_json["total_saved_bytes"].as_u64().unwrap() > 0);
+    assert!(output_path.exists());
+}

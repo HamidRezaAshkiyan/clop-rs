@@ -6,9 +6,10 @@ ARCH="${2:-arm64}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 BIN_PATH="$ROOT_DIR/target/release/clop-rs"
+CLI_BIN_PATH="$ROOT_DIR/target/release/clop-cli"
 
-if [ ! -f "$BIN_PATH" ]; then
-    echo "Building release binary..."
+if [ ! -f "$BIN_PATH" ] || [ ! -f "$CLI_BIN_PATH" ]; then
+    echo "Building release binaries..."
     cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml"
 fi
 
@@ -111,10 +112,14 @@ mkdir -p "$PKG_ROOT/Applications" "$PKG_ROOT/usr/local/bin" "$PKG_SCRIPTS"
 cp -R "$APP_DIR" "$PKG_ROOT/Applications/"
 cp "$BIN_PATH" "$PKG_ROOT/usr/local/bin/clop-rs"
 chmod +x "$PKG_ROOT/usr/local/bin/clop-rs"
+if [ -f "$CLI_BIN_PATH" ]; then
+    cp "$CLI_BIN_PATH" "$PKG_ROOT/usr/local/bin/clop-cli"
+    chmod +x "$PKG_ROOT/usr/local/bin/clop-cli"
+fi
 
 cat > "$PKG_SCRIPTS/postinstall" <<'POST'
 #!/usr/bin/env bash
-xattr -cr "/Applications/clop-rs.app" "/usr/local/bin/clop-rs" 2>/dev/null || true
+xattr -cr "/Applications/clop-rs.app" "/usr/local/bin/clop-rs" "/usr/local/bin/clop-cli" 2>/dev/null || true
 CONSOLE_USER="$(stat -f "%Su" /dev/console 2>/dev/null || true)"
 if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
     sudo -u "$CONSOLE_USER" "/usr/local/bin/clop-rs" context-menu --enable 2>/dev/null || true
@@ -147,6 +152,9 @@ rm -rf "$DMG_STAGING"
 TAR_STAGING="$DIST_DIR/clop-rs-${VERSION}-macos-${ARCH}"
 mkdir -p "$TAR_STAGING"
 cp "$BIN_PATH" "$TAR_STAGING/clop-rs"
+if [ -f "$CLI_BIN_PATH" ]; then
+    cp "$CLI_BIN_PATH" "$TAR_STAGING/clop-cli"
+fi
 cp -R "$APP_DIR" "$TAR_STAGING/"
 cp "$ROOT_DIR/README.md" "$ROOT_DIR/LICENSE" "$TAR_STAGING/"
 tar -czf "$DIST_DIR/clop-rs-${VERSION}-macos-${ARCH}.tar.gz" -C "$DIST_DIR" "clop-rs-${VERSION}-macos-${ARCH}"
