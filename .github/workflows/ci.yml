@@ -152,9 +152,11 @@ jobs:
           }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/clop-rs.exe "dist/clop-rs-$Version-windows-x64.exe"
+          Copy-Item target/release/clop-cli.exe "dist/clop-cli-$Version-windows-x64.exe"
           $StageDir = "dist/clop-rs-$Version-windows-x64"
           New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
           Copy-Item target/release/clop-rs.exe "$StageDir/clop-rs.exe"
+          Copy-Item target/release/clop-cli.exe "$StageDir/clop-cli.exe"
           Copy-Item scripts/install.ps1 "$StageDir/install.ps1"
           Copy-Item README.md, LICENSE $StageDir
           Compress-Archive -Path "$StageDir/*" -DestinationPath "dist/clop-rs-$Version-windows-x64.zip" -Force

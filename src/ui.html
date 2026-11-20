@@ -1,0 +1,1509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>clop-rs</title>
+<style>
+  :root {
+    --bg: #0b1120;
+    --surface: #111827;
+    --surface-2: #1e293b;
+    --surface-3: #273449;
+    --border: rgba(148, 163, 184, 0.16);
+    --border-hover: rgba(148, 163, 184, 0.32);
+    --text: #f1f5f9;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --accent: #34d399;
+    --accent-bg: rgba(52, 211, 153, 0.12);
+    --accent-border: rgba(52, 211, 153, 0.4);
+    --blue: #38bdf8;
+    --blue-bg: rgba(56, 189, 248, 0.12);
+    --amber: #fbbf24;
+    --amber-bg: rgba(251, 191, 36, 0.12);
+    --red: #f87171;
+    --red-bg: rgba(248, 113, 113, 0.12);
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    overflow: hidden;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .brand-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #10b981, #059669);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 15px;
+    color: #052e16;
+    box-shadow: 0 2px 10px rgba(16, 185, 129, 0.35);
+  }
+  .brand-title {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .brand-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .nav-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--bg);
+    padding: 4px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+  }
+  .nav-tab {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    padding: 6px 14px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .nav-tab:hover { color: var(--text); }
+  .nav-tab.active {
+    background: var(--surface-2);
+    color: var(--text);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+  .tab-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 99px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 99px;
+    font-size: 11.5px;
+    font-weight: 600;
+    background: var(--accent-bg);
+    color: var(--accent);
+    border: 1px solid var(--accent-border);
+    cursor: pointer;
+  }
+  .status-pill.paused {
+    background: var(--amber-bg);
+    color: var(--amber);
+    border-color: rgba(251, 191, 36, 0.35);
+  }
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  /* Main Content */
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 20px 24px;
+  }
+  main::-webkit-scrollbar { width: 8px; }
+  main::-webkit-scrollbar-track { background: transparent; }
+  main::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 99px; }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* Cards & Layout */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .card-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .card-desc {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 12.5px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--surface-3);
+    border-color: var(--border-hover);
+  }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-primary {
+    background: var(--accent);
+    color: #052e16;
+    border-color: transparent;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: #6ee7b7;
+  }
+  .btn-danger {
+    background: var(--red-bg);
+    color: var(--red);
+    border-color: rgba(248, 113, 113, 0.3);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: rgba(248, 113, 113, 0.22);
+  }
+  .btn-sm {
+    padding: 4px 10px;
+    font-size: 11.5px;
+  }
+
+  /* Dropzone */
+  .dropzone {
+    border: 2px dashed rgba(148, 163, 184, 0.28);
+    border-radius: var(--radius);
+    background: rgba(30, 41, 59, 0.35);
+    padding: 26px 20px;
+    text-align: center;
+    transition: all 0.18s ease;
+    margin-bottom: 14px;
+  }
+  .dropzone.drag-over {
+    border-color: var(--accent);
+    background: rgba(52, 211, 153, 0.1);
+    transform: scale(1.005);
+    box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.12);
+  }
+  .dropzone-icon {
+    font-size: 28px;
+    margin-bottom: 6px;
+  }
+  .dropzone-title {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .dropzone-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+  }
+  .dropzone-actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+  }
+
+  /* Supported Extensions */
+  .formats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .format-group {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+  }
+  .format-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin-bottom: 7px;
+  }
+  .ext-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .ext-pill {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .tool-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 99px;
+    font-weight: 600;
+  }
+  .tool-ok { background: var(--accent-bg); color: var(--accent); }
+  .tool-warn { background: var(--amber-bg); color: var(--amber); }
+
+  /* Quick Quality Bar */
+  .quick-quality {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .preset-pills {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .preset-pill {
+    padding: 5px 11px;
+    border-radius: 99px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-muted);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .preset-pill:hover { color: var(--text); border-color: var(--border-hover); }
+  .preset-pill.active {
+    background: var(--accent-bg);
+    color: var(--accent);
+    border-color: var(--accent-border);
+  }
+
+  /* File List */
+  .file-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .file-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 7px;
+  }
+  .file-item-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+  }
+  .file-cat-badge {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+  .cat-image { background: var(--accent-bg); color: var(--accent); }
+  .cat-document { background: var(--red-bg); color: var(--red); }
+  .cat-video { background: var(--blue-bg); color: var(--blue); }
+  .cat-unsupported { background: var(--surface-2); color: var(--text-dim); }
+  .file-meta { min-width: 0; flex: 1; }
+  .file-name {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .file-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .file-item-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .saved-badge {
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--accent-bg);
+    color: var(--accent);
+  }
+  .optimal-badge {
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--surface-2);
+    color: var(--text-muted);
+  }
+  .error-badge {
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--red-bg);
+    color: var(--red);
+  }
+  .exif-badge {
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 9.5px;
+    font-weight: 700;
+    background: var(--blue-bg);
+    color: var(--blue);
+  }
+
+  /* History KPIs */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .kpi-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .kpi-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+  }
+  .kpi-value {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  .kpi-value.accent { color: var(--accent); }
+  .kpi-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+  .history-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .history-entry {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+  }
+  .history-thumb {
+    width: 44px;
+    height: 44px;
+    border-radius: 7px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    object-fit: cover;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: var(--text-muted);
+    overflow: hidden;
+  }
+  .history-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .history-body { flex: 1; min-width: 0; }
+  .history-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 3px;
+  }
+  .history-title {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .history-time {
+    font-size: 11px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .history-metrics {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+    margin-bottom: 5px;
+  }
+  .ratio-bar {
+    height: 5px;
+    background: var(--surface-2);
+    border-radius: 99px;
+    overflow: hidden;
+  }
+  .ratio-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #10b981, #34d399);
+    border-radius: 99px;
+  }
+
+  /* Settings */
+  .preset-cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .preset-card {
+    background: var(--bg);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 11px 10px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s ease;
+    color: var(--text);
+  }
+  .preset-card:hover { border-color: var(--border-hover); }
+  .preset-card.active {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+  }
+  .preset-card-title { font-weight: 700; font-size: 12.5px; margin-bottom: 3px; }
+  .preset-card-desc { font-size: 10.5px; color: var(--text-muted); line-height: 1.35; }
+
+  .slider-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+  .slider-labels {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .slider-val {
+    color: var(--accent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .slider-ends {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10.5px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+  .slider-detail {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .setting-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .setting-label { font-weight: 600; font-size: 12.5px; }
+  .setting-help { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+  /* Switch */
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 38px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: var(--surface-3);
+    border-radius: 99px;
+    transition: 0.2s;
+  }
+  .switch-slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 3px;
+    bottom: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: 0.2s;
+  }
+  .switch input:checked + .switch-slider { background: var(--accent); }
+  .switch input:checked + .switch-slider:before { transform: translateX(16px); }
+
+  .num-input {
+    width: 96px;
+    padding: 5px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12.5px;
+    text-align: right;
+  }
+  .num-input:focus { outline: none; border-color: var(--accent); }
+
+  .inputs-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .input-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+  }
+  .input-box label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+  .input-box input {
+    width: 100%;
+    text-align: left;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 36px 16px;
+    color: var(--text-muted);
+  }
+  .empty-state-icon { font-size: 28px; margin-bottom: 8px; opacity: 0.6; }
+
+  .toast {
+    position: fixed;
+    bottom: 16px;
+    right: 20px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-hover);
+    color: var(--text);
+    padding: 9px 14px;
+    border-radius: 9px;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    transform: translateY(10px);
+    transition: all 0.2s ease;
+    pointer-events: none;
+    z-index: 999;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { border-color: var(--accent-border); color: var(--accent); }
+  .toast.error { border-color: rgba(248, 113, 113, 0.45); color: var(--red); }
+
+  .dir-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .dir-path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg);
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div class="brand-title">clop-rs</div>
+        <div class="brand-sub">Image, PDF &amp; Video Optimizer</div>
+      </div>
+    </div>
+
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="files">Optimize Files</button>
+      <button class="nav-tab" data-tab="history">
+        History <span class="tab-badge" id="history-count-badge">0</span>
+      </button>
+      <button class="nav-tab" data-tab="settings">Settings</button>
+    </nav>
+
+    <div class="header-right">
+      <button class="status-pill" id="pause-pill" title="Toggle auto clipboard optimization">
+        <span class="status-dot"></span>
+        <span id="pause-pill-text">Watching</span>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <!-- TAB 1: OPTIMIZE FILES -->
+    <section class="tab-panel active" id="tab-files">
+      <div class="dropzone" id="dropzone">
+        <div class="dropzone-icon">📂</div>
+        <div class="dropzone-title">Drag &amp; drop files or folders here to optimize</div>
+        <div class="dropzone-sub">Drop images, PDFs, or videos anywhere on this window, or browse from disk.</div>
+        <div class="dropzone-actions">
+          <button class="btn btn-primary" id="btn-pick-files">Select Files…</button>
+          <button class="btn" id="btn-pick-folder">Select Folder…</button>
+        </div>
+      </div>
+
+      <!-- Quality vs Size quick selector -->
+      <div class="card">
+        <div class="quick-quality">
+          <div>
+            <div class="card-title" style="margin-bottom:2px;">Optimization Strength</div>
+            <div class="card-desc" style="margin-bottom:0;" id="quick-quality-desc">Balanced — Great visual quality with 60–80% smaller files</div>
+          </div>
+          <div class="preset-pills" id="quick-preset-pills">
+            <button class="preset-pill" data-preset="lossless">Lossless</button>
+            <button class="preset-pill" data-preset="high-quality">High Quality</button>
+            <button class="preset-pill" data-preset="balanced">Balanced</button>
+            <button class="preset-pill" data-preset="smallest-size">Smallest Size</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Selected Files Queue -->
+      <div class="card" id="file-queue-card" style="display:none;">
+        <div class="file-list-header">
+          <div>
+            <div class="card-title" style="margin-bottom:0;">
+              Selected Files (<span id="queue-count">0</span>)
+            </div>
+            <div class="card-desc" style="margin-bottom:0;" id="queue-summary">Ready to optimize</div>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-sm" id="btn-clear-queue">Clear</button>
+            <button class="btn btn-primary btn-sm" id="btn-optimize-all">⚡ Optimize All</button>
+          </div>
+        </div>
+        <div id="file-queue-list"></div>
+      </div>
+
+      <!-- Supported Extensions -->
+      <div class="card">
+        <div class="card-title">Supported File Extensions</div>
+        <div class="card-desc">All formats below are supported via drag &amp; drop, file picker, Downloads watcher, and CLI.</div>
+        <div class="formats-grid">
+          <div class="format-group">
+            <div class="format-group-head">
+              <span>Images</span>
+              <span class="tool-badge tool-ok">Built-in</span>
+            </div>
+            <div class="ext-pills" id="ext-images"></div>
+          </div>
+          <div class="format-group">
+            <div class="format-group-head">
+              <span>Documents</span>
+              <span class="tool-badge tool-ok" id="badge-gs">Built-in</span>
+            </div>
+            <div class="ext-pills" id="ext-documents"></div>
+          </div>
+          <div class="format-group">
+            <div class="format-group-head">
+              <span>Videos</span>
+              <span class="tool-badge" id="badge-ffmpeg">Checking…</span>
+            </div>
+            <div class="ext-pills" id="ext-videos"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: CLIPBOARD & OPTIMIZATION HISTORY -->
+    <section class="tab-panel" id="tab-history">
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Total Optimized</div>
+          <div class="kpi-value" id="kpi-total-items">0</div>
+          <div class="kpi-sub" id="kpi-breakdown">0 clipboard · 0 files</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Total Space Saved</div>
+          <div class="kpi-value accent" id="kpi-saved-bytes">0 B</div>
+          <div class="kpi-sub" id="kpi-before-after">0 B → 0 B</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Average Reduction</div>
+          <div class="kpi-value accent" id="kpi-saved-pct">0.0%</div>
+          <div class="kpi-sub">Across all optimizations</div>
+        </div>
+      </div>
+
+      <div class="history-toolbar">
+        <div class="preset-pills" id="history-filters">
+          <button class="preset-pill active" data-filter="all">All</button>
+          <button class="preset-pill" data-filter="clipboard">Clipboard Only</button>
+          <button class="preset-pill" data-filter="files">Files &amp; Downloads</button>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-sm btn-primary" id="btn-opt-clipboard">⚡ Optimize Clipboard Now</button>
+          <button class="btn btn-sm" id="btn-revert-clipboard" disabled>Undo Last Clipboard</button>
+          <button class="btn btn-sm btn-danger" id="btn-clear-history">Clear History</button>
+        </div>
+      </div>
+
+      <div id="history-list"></div>
+    </section>
+
+    <!-- TAB 3: SETTINGS -->
+    <section class="tab-panel" id="tab-settings">
+      <div class="card">
+        <div class="card-title">Quality vs. File Size</div>
+        <div class="card-desc">Choose a preset or drag the slider to control how aggressively images, PDFs, and videos are compressed.</div>
+
+        <div class="preset-cards" id="settings-preset-cards">
+          <button class="preset-card" data-preset="lossless">
+            <div class="preset-card-title">Lossless</div>
+            <div class="preset-card-desc">100% bit-exact pixels. Zero visual loss.</div>
+          </button>
+          <button class="preset-card" data-preset="high-quality">
+            <div class="preset-card-title">High Quality</div>
+            <div class="preset-card-desc">Crisp detail (Q98), gentle compression.</div>
+          </button>
+          <button class="preset-card" data-preset="balanced">
+            <div class="preset-card-title">Balanced</div>
+            <div class="preset-card-desc">Best trade-off (Q95), 60–80% smaller.</div>
+          </button>
+          <button class="preset-card" data-preset="smallest-size">
+            <div class="preset-card-title">Smallest Size</div>
+            <div class="preset-card-desc">Maximum savings (Q72), smallest files.</div>
+          </button>
+        </div>
+
+        <div class="slider-box">
+          <div class="slider-labels">
+            <span>Custom Quality ↔ Size Slider</span>
+            <span class="slider-val" id="quality-slider-label">85 / 100</span>
+          </div>
+          <input type="range" id="quality-slider" min="10" max="100" step="1" value="85" />
+          <div class="slider-ends">
+            <span>Smallest Size (10)</span>
+            <span>Balanced (85)</span>
+            <span>Highest Quality (100)</span>
+          </div>
+          <div class="slider-detail" id="quality-detail-row">
+            <span>PNG Quant: 65–95</span>
+            <span>JPEG Quality: 95</span>
+            <span>PDF: /ebook</span>
+            <span>Video CRF: 21</span>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Oxipng Compression Effort (0–6)</div>
+            <div class="setting-help">Higher levels squeeze a few extra percent from PNGs at the cost of CPU time.</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input type="range" id="oxipng-slider" min="0" max="6" step="1" value="2" style="width:120px;" />
+            <span class="slider-val" id="oxipng-val" style="width:18px; text-align:right;">2</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Automatic Resizing (Optional)</div>
+        <div class="card-desc">Leave blank to keep original dimensions. Applies to clipboard, Downloads, and file optimizations.</div>
+        <div class="inputs-grid">
+          <div class="input-box">
+            <label for="input-max-width">Max Width (px)</label>
+            <input class="num-input" id="input-max-width" type="number" min="0" placeholder="Unlimited" />
+          </div>
+          <div class="input-box">
+            <label for="input-max-height">Max Height (px)</label>
+            <input class="num-input" id="input-max-height" type="number" min="0" placeholder="Unlimited" />
+          </div>
+          <div class="input-box">
+            <label for="input-scale-factor">Downscale Factor (e.g. 2.0)</label>
+            <input class="num-input" id="input-scale-factor" type="number" min="1" step="0.5" placeholder="None" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Privacy &amp; Automation</div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Strip EXIF &amp; Metadata</div>
+            <div class="setting-help">Removes GPS coordinates, camera info, XMP, and PNG text/time chunks.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-strip-exif" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Show Floating HUD Panel</div>
+            <div class="setting-help">Display bottom-right progress &amp; Revert toast whenever items are optimized.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-show-hud" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Auto-Optimize Downloads Folder</div>
+            <div class="setting-help">Automatically compress newly saved images, PDFs, and videos.</div>
+            <div class="dir-row">
+              <span class="dir-path" id="downloads-dir-label">~/Downloads</span>
+              <button class="btn btn-sm" id="btn-pick-downloads-dir">Change…</button>
+            </div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-watch-downloads" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Right-Click "Optimize with clop-rs"</div>
+            <div class="setting-help">Adds quick-action context menu in Finder / Windows Explorer.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-context-menu" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Launch at Login</div>
+            <div class="setting-help">Automatically start clop-rs in the background when you sign in.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-autostart" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Clipboard Poll Interval (ms)</div>
+            <div class="setting-help">Lower values react faster (default 350ms; 0% idle CPU via OS sequence counters).</div>
+          </div>
+          <input class="num-input" id="input-poll-ms" type="number" min="50" max="5000" step="50" value="350" />
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:11.5px; color:var(--text-dim);">Changes are saved automatically to config.toml</span>
+        <button class="btn btn-danger btn-sm" id="btn-reset-config">Reset to Defaults</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  const state = {
+    config: null,
+    history: [],
+    stats: null,
+    formats: null,
+    system: {},
+    historyFilter: "all",
+    fileQueue: [], // { path, name, ext, size, supported, category, status, original_size, optimized_size, saved_bytes, saved_percent, exif_stripped, elapsed_ms, can_revert, error }
+    optimizingQueue: false,
+  };
+
+  function post(msg) {
+    if (window.ipc && typeof window.ipc.postMessage === "function") {
+      window.ipc.postMessage(JSON.stringify(msg));
+    }
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return "0 B";
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(2) + " MB";
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return bytes + " B";
+  }
+
+  function formatTimeAgo(unixSec) {
+    if (!unixSec) return "";
+    const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSec);
+    if (diff < 60) return "just now";
+    if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+    if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+    const d = new Date(unixSec * 1000);
+    return d.toLocaleDateString();
+  }
+
+  let toastTimer = null;
+  function showToast(message, kind = "info") {
+    const el = document.getElementById("toast");
+    el.textContent = message;
+    el.className = "toast show " + kind;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = "toast"; }, 3000);
+  }
+
+  // Tab switching
+  document.querySelectorAll(".nav-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".nav-tab").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    });
+  });
+
+  // Pause pill
+  document.getElementById("pause-pill").addEventListener("click", () => {
+    post({ type: "toggle_pause", paused: !state.system.paused });
+  });
+
+  // File picker buttons
+  document.getElementById("btn-pick-files").addEventListener("click", () => post({ type: "pick_files" }));
+  document.getElementById("btn-pick-folder").addEventListener("click", () => post({ type: "pick_folder" }));
+  document.getElementById("btn-clear-queue").addEventListener("click", () => {
+    state.fileQueue = [];
+    renderFileQueue();
+  });
+  document.getElementById("btn-optimize-all").addEventListener("click", () => {
+    const paths = state.fileQueue
+      .filter((f) => f.supported && f.status !== "optimizing")
+      .map((f) => f.path);
+    if (paths.length === 0) {
+      showToast("No supported files to optimize", "error");
+      return;
+    }
+    state.optimizingQueue = true;
+    state.fileQueue.forEach((f) => {
+      if (paths.includes(f.path)) {
+        f.status = "optimizing";
+        f.error = null;
+      }
+    });
+    renderFileQueue();
+    post({ type: "optimize_files", paths });
+  });
+
+  // Quick & Settings preset buttons
+  document.querySelectorAll("[data-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      post({ type: "apply_preset", preset: btn.dataset.preset });
+    });
+  });
+
+  // Quality slider
+  const qualitySlider = document.getElementById("quality-slider");
+  qualitySlider.addEventListener("input", () => {
+    const v = parseInt(qualitySlider.value, 10);
+    document.getElementById("quality-slider-label").textContent = v + " / 100";
+    updateQualityDetailsPreview(v, false);
+  });
+  qualitySlider.addEventListener("change", () => {
+    post({ type: "apply_quality", quality: parseInt(qualitySlider.value, 10) });
+  });
+
+  // Oxipng slider
+  const oxipngSlider = document.getElementById("oxipng-slider");
+  oxipngSlider.addEventListener("input", () => {
+    document.getElementById("oxipng-val").textContent = oxipngSlider.value;
+  });
+  oxipngSlider.addEventListener("change", () => {
+    sendConfigPatch({ oxipng_level: parseInt(oxipngSlider.value, 10) });
+  });
+
+  // Numeric resize & poll inputs
+  function bindOptionalInt(id, key) {
+    const el = document.getElementById(id);
+    el.addEventListener("change", () => {
+      const val = parseInt(el.value, 10);
+      sendConfigPatch({ [key]: !isNaN(val) && val > 0 ? val : null });
+    });
+  }
+  bindOptionalInt("input-max-width", "max_width");
+  bindOptionalInt("input-max-height", "max_height");
+  document.getElementById("input-scale-factor").addEventListener("change", (e) => {
+    const val = parseFloat(e.target.value);
+    sendConfigPatch({ scale_factor: !isNaN(val) && val > 1.0 ? val : null });
+  });
+  document.getElementById("input-poll-ms").addEventListener("change", (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val >= 50) {
+      sendConfigPatch({ poll_interval_ms: val });
+    }
+  });
+
+  // Toggles
+  document.getElementById("toggle-strip-exif").addEventListener("change", (e) => {
+    sendConfigPatch({ strip_metadata: e.target.checked });
+  });
+  document.getElementById("toggle-show-hud").addEventListener("change", (e) => {
+    sendConfigPatch({ show_floating_hud: e.target.checked });
+  });
+  document.getElementById("toggle-watch-downloads").addEventListener("change", (e) => {
+    sendConfigPatch({ watch_downloads: e.target.checked });
+  });
+  document.getElementById("toggle-context-menu").addEventListener("change", (e) => {
+    post({ type: "toggle_context_menu", enabled: e.target.checked });
+  });
+  document.getElementById("toggle-autostart").addEventListener("change", (e) => {
+    post({ type: "toggle_autostart", enabled: e.target.checked });
+  });
+  document.getElementById("btn-pick-downloads-dir").addEventListener("click", () => {
+    post({ type: "pick_downloads_dir" });
+  });
+  document.getElementById("btn-reset-config").addEventListener("click", () => {
+    post({ type: "reset_config" });
+  });
+
+  // History actions
+  document.querySelectorAll("#history-filters [data-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#history-filters [data-filter]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      state.historyFilter = btn.dataset.filter;
+      renderHistory();
+    });
+  });
+  document.getElementById("btn-opt-clipboard").addEventListener("click", () => {
+    post({ type: "optimize_clipboard_now" });
+  });
+  document.getElementById("btn-revert-clipboard").addEventListener("click", () => {
+    post({ type: "revert_clipboard" });
+  });
+  document.getElementById("btn-clear-history").addEventListener("click", () => {
+    post({ type: "clear_history" });
+  });
+
+  function sendConfigPatch(patch) {
+    if (!state.config) return;
+    const merged = Object.assign({}, state.config, patch);
+    post({ type: "update_config", config: merged });
+  }
+
+  function updateQualityDetailsPreview(q, isLossless) {
+    const row = document.getElementById("quality-detail-row");
+    if (isLossless) {
+      row.innerHTML =
+        "<span>PNG: 100% Bit-Exact Lossless</span>" +
+        "<span>JPEG: EXIF Strip Only</span>" +
+        "<span>PDF: /prepress</span>" +
+        "<span>Video CRF: 18</span>";
+      return;
+    }
+    const qMin = Math.max(10, q - 25);
+    const jpegQ = Math.min(96, Math.max(35, q));
+    const pdfProfile = q >= 92 ? "/printer" : q >= 75 ? "/ebook" : "/screen";
+    const crf = q >= 92 ? 21 : q >= 80 ? 24 : q >= 65 ? 27 : 30;
+    row.innerHTML =
+      `<span>PNG Quant: ${qMin}–${q}</span>` +
+      `<span>JPEG Quality: ${jpegQ}</span>` +
+      `<span>PDF: ${pdfProfile}</span>` +
+      `<span>Video CRF: ${crf}</span>`;
+  }
+
+  function renderFormats() {
+    if (!state.formats) return;
+    const renderPills = (id, list) => {
+      document.getElementById(id).innerHTML = list.map((ext) => `<span class="ext-pill">.${ext}</span>`).join("");
+    };
+    renderPills("ext-images", state.formats.images);
+    renderPills("ext-documents", state.formats.documents);
+    renderPills("ext-videos", state.formats.videos);
+
+    const gsBadge = document.getElementById("badge-gs");
+    gsBadge.textContent = state.formats.has_ghostscript ? "Native + GS" : "Native Rust";
+    gsBadge.className = "tool-badge tool-ok";
+
+    const ffBadge = document.getElementById("badge-ffmpeg");
+    if (state.formats.has_ffmpeg) {
+      ffBadge.textContent = "FFmpeg Ready";
+      ffBadge.className = "tool-badge tool-ok";
+    } else {
+      ffBadge.textContent = "Install FFmpeg";
+      ffBadge.className = "tool-badge tool-warn";
+    }
+  }
+
+  function renderConfig() {
+    const c = state.config;
+    if (!c) return;
+    const isLossless = c.mode === "lossless" || c.preset === "lossless";
+    const activePreset = isLossless ? "lossless" : c.preset;
+
+    document.querySelectorAll("[data-preset]").forEach((el) => {
+      el.classList.toggle("active", el.dataset.preset === activePreset);
+    });
+
+    const descs = {
+      "lossless": "Lossless — 100% bit-exact quality, zero visual artifacts",
+      "high-quality": "High Quality — Crisp detail (Q98) with gentle space savings",
+      "balanced": "Balanced — Great visual quality with 60–80% smaller files",
+      "smallest-size": "Smallest Size — Aggressive compression for maximum space savings",
+      "custom": `Custom — Quality ${c.quality_max}/100 (PNG ${c.quality_min}–${c.quality_max})`,
+    };
+    document.getElementById("quick-quality-desc").textContent = descs[activePreset] || descs.balanced;
+
+    qualitySlider.value = isLossless ? 100 : (c.quality_max || c.quality_level || 85);
+    document.getElementById("quality-slider-label").textContent = isLossless
+      ? "Lossless (100%)"
+      : `${qualitySlider.value} / 100`;
+    updateQualityDetailsPreview(parseInt(qualitySlider.value, 10), isLossless);
+
+    oxipngSlider.value = c.oxipng_level;
+    document.getElementById("oxipng-val").textContent = c.oxipng_level;
+
+    document.getElementById("input-max-width").value = c.max_width || "";
+    document.getElementById("input-max-height").value = c.max_height || "";
+    document.getElementById("input-scale-factor").value = c.scale_factor || "";
+    document.getElementById("input-poll-ms").value = c.poll_interval_ms || 350;
+
+    document.getElementById("toggle-strip-exif").checked = !!c.strip_metadata;
+    document.getElementById("toggle-show-hud").checked = !!c.show_floating_hud;
+    document.getElementById("toggle-watch-downloads").checked = !!c.watch_downloads;
+    document.getElementById("toggle-context-menu").checked = !!state.system.context_menu;
+    document.getElementById("toggle-autostart").checked = !!state.system.autostart;
+    document.getElementById("downloads-dir-label").textContent = state.system.effective_downloads_dir || "~/Downloads";
+
+    const pausePill = document.getElementById("pause-pill");
+    pausePill.classList.toggle("paused", !!state.system.paused);
+    document.getElementById("pause-pill-text").textContent = state.system.paused ? "Paused" : "Watching";
+    document.getElementById("btn-revert-clipboard").disabled = !state.system.can_revert_clipboard;
+  }
+
+  function renderFileQueue() {
+    const card = document.getElementById("file-queue-card");
+    const listEl = document.getElementById("file-queue-list");
+    if (state.fileQueue.length === 0) {
+      card.style.display = "none";
+      return;
+    }
+    card.style.display = "block";
+    document.getElementById("queue-count").textContent = state.fileQueue.length;
+
+    const doneItems = state.fileQueue.filter((f) => f.status === "done");
+    const totalSaved = doneItems.reduce((acc, f) => acc + (f.saved_bytes || 0), 0);
+    const optBtn = document.getElementById("btn-optimize-all");
+    const anyOptimizing = state.fileQueue.some((f) => f.status === "optimizing");
+    optBtn.disabled = anyOptimizing;
+    optBtn.textContent = anyOptimizing ? "Optimizing…" : "⚡ Optimize All";
+
+    if (doneItems.length > 0) {
+      document.getElementById("queue-summary").textContent =
+        `${doneItems.length} optimized · ${formatBytes(totalSaved)} saved`;
+    } else {
+      const supportedCount = state.fileQueue.filter((f) => f.supported).length;
+      document.getElementById("queue-summary").textContent =
+        `${supportedCount} supported file${supportedCount === 1 ? "" : "s"} ready`;
+    }
+
+    listEl.innerHTML = state.fileQueue.map((f, idx) => {
+      const catClass = "cat-" + (f.category || "unsupported");
+      let statusHtml = "";
+      let subHtml = `<span>${formatBytes(f.size)}</span>`;
+
+      if (!f.supported) {
+        statusHtml = `<span class="error-badge">Unsupported</span>`;
+      } else if (f.status === "optimizing") {
+        statusHtml = `<span class="optimal-badge">Optimizing…</span>`;
+      } else if (f.status === "done") {
+        subHtml = `<span>${formatBytes(f.original_size)} → ${formatBytes(f.optimized_size)}</span>` +
+          `<span>${f.elapsed_ms}ms</span>` +
+          (f.exif_stripped ? `<span class="exif-badge">EXIF</span>` : "");
+        statusHtml = `<span class="saved-badge">-${f.saved_percent.toFixed(1)}% (${formatBytes(f.saved_bytes)})</span>` +
+          (f.can_revert ? `<button class="btn btn-sm" data-revert-idx="${idx}">Revert</button>` : "");
+      } else if (f.status === "optimal") {
+        statusHtml = `<span class="optimal-badge">Already Optimal</span>`;
+      } else if (f.status === "reverted") {
+        statusHtml = `<span class="optimal-badge">Reverted</span>`;
+      } else if (f.status === "error") {
+        statusHtml = `<span class="error-badge" title="${escapeHtml(f.error || "Error")}">Failed</span>`;
+      } else {
+        statusHtml = `<button class="btn btn-sm" data-remove-idx="${idx}">✕</button>`;
+      }
+
+      return `
+        <div class="file-item">
+          <div class="file-item-left">
+            <div class="file-cat-badge ${catClass}">${escapeHtml(f.ext || "?")}</div>
+            <div class="file-meta">
+              <div class="file-name" title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</div>
+              <div class="file-sub">${subHtml}</div>
+            </div>
+          </div>
+          <div class="file-item-right">${statusHtml}</div>
+        </div>`;
+    }).join("");
+
+    listEl.querySelectorAll("[data-remove-idx]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.dataset.removeIdx, 10);
+        state.fileQueue.splice(idx, 1);
+        renderFileQueue();
+      });
+    });
+    listEl.querySelectorAll("[data-revert-idx]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.dataset.revertIdx, 10);
+        const item = state.fileQueue[idx];
+        if (item) post({ type: "revert_file", path: item.path });
+      });
+    });
+  }
+
+  function renderHistory() {
+    const stats = state.stats || { total_items: 0, clipboard_items: 0, file_items: 0, total_original_bytes: 0, total_optimized_bytes: 0, total_saved_bytes: 0, overall_saved_percent: 0 };
+    document.getElementById("history-count-badge").textContent = stats.total_items;
+    document.getElementById("kpi-total-items").textContent = stats.total_items;
+    document.getElementById("kpi-breakdown").textContent = `${stats.clipboard_items} clipboard · ${stats.file_items} files`;
+    document.getElementById("kpi-saved-bytes").textContent = formatBytes(stats.total_saved_bytes);
+    document.getElementById("kpi-before-after").textContent = `${formatBytes(stats.total_original_bytes)} → ${formatBytes(stats.total_optimized_bytes)}`;
+    document.getElementById("kpi-saved-pct").textContent = stats.overall_saved_percent.toFixed(1) + "%";
+
+    const filtered = state.history.filter((e) => {
+      if (state.historyFilter === "clipboard") return e.source === "clipboard";
+      if (state.historyFilter === "files") return e.source !== "clipboard";
+      return true;
+    });
+
+    const listEl = document.getElementById("history-list");
+    if (filtered.length === 0) {
+      listEl.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon">📋</div>
+          <div style="font-weight:600; color:var(--text); margin-bottom:4px;">No optimization history yet</div>
+          <div>Copy an image to your clipboard or drop files in the Optimize tab to see savings here.</div>
+        </div>`;
+      return;
+    }
+
+    listEl.innerHTML = filtered.map((e) => {
+      const thumbHtml = e.thumbnail_data_url
+        ? `<img src="${e.thumbnail_data_url}" alt="" />`
+        : (e.source === "clipboard" ? "📋" : "📄");
+      const dims = e.width > 0 && e.height > 0 ? `${e.width}×${e.height}` : "";
+      const pct = Math.max(0, Math.min(100, e.saved_percent || 0));
+      const srcTag = e.source === "clipboard" ? "Clipboard" : e.source === "downloads" ? "Downloads" : e.source === "cli" ? "CLI" : "File";
+      return `
+        <div class="history-entry">
+          <div class="history-thumb">${thumbHtml}</div>
+          <div class="history-body">
+            <div class="history-top">
+              <div class="history-title">${escapeHtml(e.label)} <span style="font-weight:500; font-size:11px; color:var(--text-dim);">· ${srcTag}</span></div>
+              <div class="history-time">${formatTimeAgo(e.timestamp_unix)}</div>
+            </div>
+            <div class="history-metrics">
+              <span><strong>${formatBytes(e.original_size)}</strong> → <strong>${formatBytes(e.optimized_size)}</strong></span>
+              <span class="saved-badge">-${pct.toFixed(1)}% (${formatBytes(e.saved_bytes)} saved)</span>
+              ${dims ? `<span>${dims}</span>` : ""}
+              <span>${escapeHtml(e.preset_label || "")}</span>
+              <span>${e.elapsed_ms}ms</span>
+              ${e.exif_stripped ? `<span class="exif-badge">EXIF</span>` : ""}
+            </div>
+            <div class="ratio-bar"><div class="ratio-fill" style="width:${pct.toFixed(1)}%"></div></div>
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // Receive messages pushed from Rust
+  window.__clopReceive = function (msg) {
+    if (!msg || !msg.type) return;
+    switch (msg.type) {
+      case "state":
+        state.config = msg.config;
+        state.history = msg.history || [];
+        state.stats = msg.stats || null;
+        state.formats = msg.formats || null;
+        state.system = msg.system || {};
+        renderFormats();
+        renderConfig();
+        renderHistory();
+        break;
+      case "drag_hover":
+        document.getElementById("dropzone").classList.toggle("drag-over", !!msg.active);
+        break;
+      case "files_added":
+        (msg.files || []).forEach((f) => {
+          if (!state.fileQueue.some((existing) => existing.path === f.path)) {
+            state.fileQueue.push(Object.assign({ status: "pending" }, f));
+          }
+        });
+        // Switch to Optimize Files tab when user drops files
+        document.querySelector('.nav-tab[data-tab="files"]').click();
+        renderFileQueue();
+        break;
+      case "file_progress": {
+        const item = state.fileQueue.find((f) => f.path === msg.path);
+        if (item) {
+          Object.assign(item, msg);
+          renderFileQueue();
+        }
+        break;
+      }
+      case "file_reverted": {
+        const item = state.fileQueue.find((f) => f.path === msg.path);
+        if (item) {
+          item.status = "reverted";
+          item.can_revert = false;
+          item.size = msg.restored_size;
+          renderFileQueue();
+        }
+        showToast("Reverted file to original (" + formatBytes(msg.restored_size) + ")", "info");
+        break;
+      }
+      case "toast":
+        showToast(msg.message, msg.kind || "info");
+        break;
+    }
+  };
+
+  // Prevent browser default file-drop navigation
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", (e) => e.preventDefault());
+
+  // Notify Rust that WebView is ready
+  post({ type: "ready" });
+})();
+</script>
+</body>
+</html>

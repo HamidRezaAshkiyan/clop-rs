@@ -8,6 +8,7 @@ use clap::Parser;
 use clop_rs::clipboard::ClipboardMonitor;
 use clop_rs::config::{AppConfig, Cli, Commands};
 use clop_rs::downloads::DownloadsWatcher;
+use clop_rs::history::{HistorySource, OptimizationHistory};
 use clop_rs::optimizer::{self, format_bytes};
 use clop_rs::{context_menu, platform, tray};
 use std::thread;
@@ -22,9 +23,60 @@ fn main() -> Result<()> {
     let mut config = AppConfig::load().unwrap_or_default();
     config.apply_cli(&cli);
 
-    // Handle subcommands first (`file`, `config`, `autostart`, `context-menu`)
+    // Handle subcommands first (`ui`, `history`, `file`, `config`, `autostart`, `context-menu`)
     if let Some(ref cmd) = cli.command {
         match cmd {
+            Commands::Ui => {
+                return tray::run_with_tray(config, true);
+            }
+            Commands::History {
+                clipboard,
+                clear,
+                limit,
+            } => {
+                let mut history = OptimizationHistory::load();
+                if *clear {
+                    history.clear();
+                    let path = history.save()?;
+                    println!("Cleared optimization history ({})", path.display());
+                    return Ok(());
+                }
+                let stats = history.stats();
+                println!(
+                    "clop-rs History: {} items ({} clipboard, {} files) | Saved {} ({:.1}%)",
+                    stats.total_items,
+                    stats.clipboard_items,
+                    stats.file_items,
+                    format_bytes(stats.total_saved_bytes as usize),
+                    stats.overall_saved_percent
+                );
+                let entries: Vec<_> = history
+                    .entries
+                    .iter()
+                    .filter(|e| !*clipboard || e.source == HistorySource::Clipboard)
+                    .take(*limit)
+                    .collect();
+                if entries.is_empty() {
+                    println!("(no entries)");
+                    return Ok(());
+                }
+                for e in entries {
+                    let exif = if e.exif_stripped { " [EXIF]" } else { "" };
+                    println!(
+                        "  [{}] {} — {} -> {} (-{:.1}%, {} saved, {}ms, {}){}",
+                        e.source.as_str(),
+                        e.label,
+                        format_bytes(e.original_size),
+                        format_bytes(e.optimized_size),
+                        e.saved_percent,
+                        format_bytes(e.saved_bytes),
+                        e.elapsed_ms,
+                        e.preset_label,
+                        exif
+                    );
+                }
+                return Ok(());
+            }
             Commands::File { paths, output, hud } => {
                 if output.is_some() && paths.len() > 1 {
                     bail!("--output can only be specified when optimizing a single file");
@@ -32,9 +84,30 @@ fn main() -> Result<()> {
                 if *hud {
                     return tray::run_file_with_hud(paths.clone(), output.clone(), config);
                 }
+                let mut history = OptimizationHistory::load();
                 for path in paths {
                     let res = optimizer::optimize_file(path, output.as_deref(), &config)?;
                     if res.was_modified {
+                        let file_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("File")
+                            .to_string();
+                        let summary = clop_rs::clipboard::OptimizationSummary {
+                            source_label: file_name,
+                            width: res.width,
+                            height: res.height,
+                            original_size: res.original_size,
+                            optimized_size: res.optimized_size,
+                            saved_bytes: res.saved_bytes(),
+                            saved_percent: res.saved_percent(),
+                            exif_stripped: res.exif_stripped,
+                            elapsed: res.elapsed,
+                            thumbnail_64: Vec::new(),
+                        };
+                        history.record_summary(HistorySource::File, &summary, Some(path), &config);
+                        let _ = history.save();
+
                         let exif_tag = if res.exif_stripped {
                             " [EXIF/metadata stripped]"
                         } else {
@@ -139,6 +212,9 @@ fn main() -> Result<()> {
         let mut monitor = ClipboardMonitor::new();
         match monitor.poll_once(&config, true)? {
             Some(summary) => {
+                let mut history = OptimizationHistory::load();
+                history.record_summary(HistorySource::Clipboard, &summary, None, &config);
+                let _ = history.save();
                 println!(
                     "✓ Optimized clipboard image ({}x{}): {}",
                     summary.width,
@@ -158,19 +234,21 @@ fn main() -> Result<()> {
         return run_headless_daemon(config);
     }
 
-    // Default: native Menu Bar (macOS) / System Tray (Windows) + Floating HUD Panel
-    tray::run_with_tray(config)
+    // Default: native Menu Bar (macOS) / System Tray (Windows) + Floating HUD Panel + Dashboard UI
+    tray::run_with_tray(config, cli.open_ui)
 }
 
 fn run_headless_daemon(config: AppConfig) -> Result<()> {
     log::info!(
-        "clop-rs running in headless daemon mode (mode={:?}, strip_exif={}, watch_downloads={}, interval={}ms)",
+        "clop-rs running in headless daemon mode (preset={:?}, mode={:?}, strip_exif={}, watch_downloads={}, interval={}ms)",
+        config.preset,
         config.mode,
         config.strip_metadata,
         config.watch_downloads,
         config.poll_interval_ms
     );
     let mut monitor = ClipboardMonitor::new();
+    let mut history = OptimizationHistory::load();
     let mut downloads = DownloadsWatcher::new(if config.watch_downloads {
         config.effective_downloads_dir()
     } else {
@@ -179,13 +257,29 @@ fn run_headless_daemon(config: AppConfig) -> Result<()> {
     let interval = Duration::from_millis(config.poll_interval_ms.max(50));
 
     loop {
-        if let Err(err) = monitor.poll_once(&config, false) {
-            log::debug!("Clipboard poll error: {}", err);
+        match monitor.poll_once(&config, false) {
+            Ok(Some(summary)) => {
+                history.record_summary(HistorySource::Clipboard, &summary, None, &config);
+                let _ = history.save();
+            }
+            Ok(None) => {}
+            Err(err) => log::debug!("Clipboard poll error: {}", err),
         }
         if config.watch_downloads {
             if let Some(pending) = downloads.inspect_next_file(&config) {
-                if let Err(err) = downloads.optimize_pending_file(pending, &config) {
-                    log::debug!("Downloads optimization error: {}", err);
+                let path = pending.path.clone();
+                match downloads.optimize_pending_file(pending, &config) {
+                    Ok(Some(summary)) => {
+                        history.record_summary(
+                            HistorySource::Downloads,
+                            &summary,
+                            Some(&path),
+                            &config,
+                        );
+                        let _ = history.save();
+                    }
+                    Ok(None) => {}
+                    Err(err) => log::debug!("Downloads optimization error: {}", err),
                 }
             }
         }

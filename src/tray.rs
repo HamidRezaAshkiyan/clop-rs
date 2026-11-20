@@ -1,26 +1,30 @@
 use crate::clipboard::{ClipboardMonitor, OptimizationSummary, SessionStats};
-use crate::config::{AppConfig, OptimizationMode};
+use crate::config::{AppConfig, OptimizationMode, OptimizationPreset};
 use crate::context_menu;
 use crate::downloads::DownloadsWatcher;
+use crate::history::{HistorySource, OptimizationHistory};
 use crate::hud::{FloatingHud, HudAction, HudPhase, RevertSource};
 use crate::optimizer::{self, format_bytes, generate_thumbnail};
+use crate::ui::{self, AppEvent, DashboardWindow, UiCommand};
 use crate::{pdf, platform, video};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tao::event::Event;
+use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
 /// Runs the background event loop with:
 /// - Native macOS Menu Bar / Windows System Tray icon
+/// - Graphical Dashboard & Settings window (Settings, Clipboard History, Drag & Drop File Optimizer)
 /// - Floating HUD Panel (progress bar, before/after size comparison, `[REVERT]` button)
 /// - Automatic Clipboard & Downloads folder optimization (Images, PDFs, Videos)
 /// - Finder / Windows Explorer Right-Click Context Menu toggle
-pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
-    let event_loop = EventLoopBuilder::new().build();
+pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()> {
+    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
 
     platform::configure_background_app();
 
@@ -31,6 +35,7 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
 
     let menu = Menu::new();
 
+    let open_dashboard_item = MenuItem::new("Open Dashboard & Settings…", true, None);
     let status_item = MenuItem::new("clop-rs — Watching Clipboard", false, None);
     let session_item = MenuItem::new("Session: 0 files/images (0 B saved)", false, None);
     let optimize_now_item = MenuItem::new("Optimize Clipboard Now", true, None);
@@ -71,6 +76,8 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
     );
     let quit_item = MenuItem::new("Quit clop-rs", true, None);
 
+    menu.append(&open_dashboard_item)?;
+    menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&status_item)?;
     menu.append(&session_item)?;
     menu.append(&PredefinedMenuItem::separator())?;
@@ -96,6 +103,8 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
         .context("Failed to create system tray / menu bar icon")?;
 
     let mut hud = FloatingHud::new(&event_loop, config.show_floating_hud);
+    let mut dashboard = DashboardWindow::new(proxy);
+    let mut history = OptimizationHistory::load();
     let mut monitor = ClipboardMonitor::new();
     let mut downloads = DownloadsWatcher::new(if config.watch_downloads {
         config.effective_downloads_dir()
@@ -103,12 +112,17 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
         None
     });
 
+    if open_ui_on_start {
+        dashboard.show(&event_loop);
+    }
+
     let mut last_revert_source: Option<RevertSource> = None;
     let mut paused = false;
-    let poll_interval = Duration::from_millis(config.poll_interval_ms.max(100));
+    let mut poll_interval = Duration::from_millis(config.poll_interval_ms.max(100));
     let hud_tick_interval = Duration::from_millis(80);
     let mut next_poll = Instant::now();
 
+    let open_dashboard_id = open_dashboard_item.id().clone();
     let optimize_now_id = optimize_now_item.id().clone();
     let revert_id = revert_item.id().clone();
     let pause_id = pause_item.id().clone();
@@ -121,7 +135,8 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
     let quit_id = quit_item.id().clone();
 
     log::info!(
-        "clop-rs started (mode={:?}, strip_exif={}, watch_downloads={}, hud={})",
+        "clop-rs started (preset={:?}, mode={:?}, strip_exif={}, watch_downloads={}, hud={})",
+        config.preset,
         config.mode,
         config.strip_metadata,
         config.watch_downloads,
@@ -136,14 +151,321 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
         };
         *control_flow = ControlFlow::WaitUntil(wakeup);
 
-        // 1. Handle Floating HUD window events (hover, click on [REVERT] or [X])
+        // 0. Handle custom events from Dashboard WebView, Drag & Drop, and Background File Optimizer
+        if let Event::UserEvent(user_event) = event {
+            match user_event {
+                AppEvent::UiFileHover(active) => {
+                    dashboard.send_drag_hover(active);
+                }
+                AppEvent::UiFileDrop(paths) => {
+                    dashboard.send_files_added(paths);
+                }
+                AppEvent::FileProgress(mut update) => {
+                    if let Some(backup) = update.backup_bytes.take() {
+                        dashboard.file_backups.insert(update.path.clone(), backup);
+                    }
+                    if let Some(summary) = update.summary.take() {
+                        history.record_summary(
+                            HistorySource::File,
+                            &summary,
+                            Some(Path::new(&update.path)),
+                            &config,
+                        );
+                        let _ = history.save();
+                        monitor.stats.images_optimized += 1;
+                        monitor.stats.total_original_bytes += summary.original_size as u64;
+                        monitor.stats.total_optimized_bytes += summary.optimized_size as u64;
+                        monitor.stats.last_summary = Some(summary.clone());
+                        update_tray_labels(
+                            &status_item,
+                            &session_item,
+                            &summary.display_short(),
+                            &monitor.stats,
+                        );
+                    }
+                    dashboard.send_file_progress(&update);
+                    dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
+                }
+                AppEvent::UiIpc(raw_json) => match serde_json::from_str::<UiCommand>(&raw_json) {
+                    Ok(cmd) => match cmd {
+                        UiCommand::Ready => {
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                        }
+                        UiCommand::UpdateConfig { config: new_cfg } => {
+                            config = new_cfg;
+                            poll_interval = Duration::from_millis(config.poll_interval_ms.max(100));
+                            smart_mode_item.set_checked(config.mode == OptimizationMode::Smart);
+                            strip_exif_item.set_checked(config.strip_metadata);
+                            watch_downloads_item.set_checked(config.watch_downloads);
+                            show_hud_item.set_checked(config.show_floating_hud);
+                            hud.set_enabled(config.show_floating_hud, elwt);
+                            if config.watch_downloads {
+                                downloads.set_directory(config.effective_downloads_dir());
+                            } else {
+                                downloads.set_directory(None);
+                            }
+                            let _ = config.save();
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                        }
+                        UiCommand::ApplyPreset { preset } => {
+                            config.apply_preset(preset);
+                            smart_mode_item.set_checked(config.mode == OptimizationMode::Smart);
+                            let _ = config.save();
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                            dashboard.send_toast(
+                                &format!("Preset set to {}", preset.display_name()),
+                                "success",
+                            );
+                        }
+                        UiCommand::ApplyQuality { quality } => {
+                            config.apply_quality_level(quality);
+                            smart_mode_item.set_checked(true);
+                            let _ = config.save();
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                        }
+                        UiCommand::ResetConfig => {
+                            config = AppConfig::default();
+                            poll_interval = Duration::from_millis(config.poll_interval_ms.max(100));
+                            smart_mode_item.set_checked(config.mode == OptimizationMode::Smart);
+                            strip_exif_item.set_checked(config.strip_metadata);
+                            watch_downloads_item.set_checked(config.watch_downloads);
+                            show_hud_item.set_checked(config.show_floating_hud);
+                            hud.set_enabled(config.show_floating_hud, elwt);
+                            downloads.set_directory(None);
+                            let _ = config.save();
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                            dashboard.send_toast("Reset settings to defaults", "info");
+                        }
+                        UiCommand::ToggleAutostart { enabled } => {
+                            match platform::set_autostart(enabled) {
+                                Ok(_) => autostart_item.set_checked(enabled),
+                                Err(err) => {
+                                    log::error!("Failed to toggle autostart: {}", err);
+                                    dashboard
+                                        .send_toast("Failed to update Launch at Login", "error");
+                                }
+                            }
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                        }
+                        UiCommand::ToggleContextMenu { enabled } => {
+                            match context_menu::set_context_menu(enabled) {
+                                Ok(_) => context_menu_item.set_checked(enabled),
+                                Err(err) => {
+                                    log::error!("Failed to toggle context menu: {}", err);
+                                    dashboard.send_toast(
+                                        "Failed to update right-click context menu",
+                                        "error",
+                                    );
+                                }
+                            }
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                        }
+                        UiCommand::TogglePause { paused: new_paused } => {
+                            paused = new_paused;
+                            pause_item.set_checked(paused);
+                            if paused {
+                                status_item.set_text("clop-rs — Paused");
+                            } else {
+                                status_item.set_text("clop-rs — Watching Clipboard");
+                            }
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                        }
+                        UiCommand::PickDownloadsDir => {
+                            if let Some(dir) = ui::pick_folder("Select Folder to Auto-Optimize") {
+                                config.downloads_dir = Some(dir.clone());
+                                if config.watch_downloads {
+                                    downloads.set_directory(Some(dir));
+                                }
+                                let _ = config.save();
+                                dashboard.push_state(
+                                    &config,
+                                    &history,
+                                    paused,
+                                    monitor.last_backup.is_some(),
+                                );
+                            }
+                        }
+                        UiCommand::PickFiles => {
+                            let picked = ui::pick_supported_files();
+                            if !picked.is_empty() {
+                                dashboard.send_files_added(picked);
+                            }
+                        }
+                        UiCommand::PickFolder => {
+                            if let Some(dir) = ui::pick_folder("Select Folder of Files to Optimize")
+                            {
+                                dashboard.send_files_added(vec![dir]);
+                            }
+                        }
+                        UiCommand::OptimizeFiles { paths } => {
+                            dashboard.spawn_optimize_files(paths, config.clone());
+                        }
+                        UiCommand::RevertFile { path } => {
+                            if let Some(orig_bytes) = dashboard.file_backups.remove(&path) {
+                                let len = orig_bytes.len();
+                                match fs::write(&path, &orig_bytes) {
+                                    Ok(_) => {
+                                        dashboard.send_file_reverted(&path, len);
+                                    }
+                                    Err(err) => {
+                                        dashboard.send_toast(
+                                            &format!("Failed to revert: {}", err),
+                                            "error",
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        UiCommand::OptimizeClipboardNow => {
+                            if let Some(pending) = monitor.inspect_new_image(true) {
+                                hud.show_optimizing(
+                                    "Clipboard",
+                                    pending.width,
+                                    pending.height,
+                                    pending.estimated_size,
+                                    pending.thumbnail_64.clone(),
+                                );
+                                match monitor.optimize_pending(pending, &config) {
+                                    Ok(Some(summary)) => {
+                                        last_revert_source = Some(RevertSource::Clipboard);
+                                        revert_item.set_enabled(true);
+                                        history.record_summary(
+                                            HistorySource::Clipboard,
+                                            &summary,
+                                            None,
+                                            &config,
+                                        );
+                                        let _ = history.save();
+                                        update_tray_labels(
+                                            &status_item,
+                                            &session_item,
+                                            &summary.display_short(),
+                                            &monitor.stats,
+                                        );
+                                        dashboard.send_toast(
+                                            &format!(
+                                                "Clipboard optimized: {}",
+                                                summary.display_short()
+                                            ),
+                                            "success",
+                                        );
+                                        hud.show_completed(summary, RevertSource::Clipboard);
+                                    }
+                                    Ok(None) => {
+                                        hud.hide();
+                                        dashboard.send_toast(
+                                            "Clipboard image is already optimal",
+                                            "info",
+                                        );
+                                    }
+                                    Err(err) => {
+                                        hud.hide();
+                                        dashboard.send_toast(
+                                            &format!("Optimization error: {}", err),
+                                            "error",
+                                        );
+                                    }
+                                }
+                            } else {
+                                dashboard.send_toast("No image found on clipboard", "info");
+                            }
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                        }
+                        UiCommand::RevertClipboard => {
+                            perform_revert(
+                                RevertSource::Clipboard,
+                                &mut monitor,
+                                &mut downloads,
+                                &mut hud,
+                                &status_item,
+                                &revert_item,
+                            );
+                            last_revert_source = None;
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                            dashboard.send_toast("Reverted clipboard to original", "info");
+                        }
+                        UiCommand::ClearHistory => {
+                            history.clear();
+                            let _ = history.save();
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                            dashboard.send_toast("Cleared optimization history", "info");
+                        }
+                    },
+                    Err(err) => {
+                        log::debug!("Ignored unknown UI IPC command: {}", err);
+                    }
+                },
+            }
+            return;
+        }
+
+        // 1. Handle Floating HUD & Dashboard window events
         if let Event::WindowEvent {
             window_id,
             ref event,
             ..
         } = event
         {
-            if Some(window_id) == hud.window_id() {
+            if Some(window_id) == dashboard.window_id() {
+                if let WindowEvent::CloseRequested = event {
+                    dashboard.hide();
+                }
+            } else if Some(window_id) == hud.window_id() {
                 match hud.handle_window_event(event) {
                     HudAction::Revert(source) => {
                         perform_revert(
@@ -155,6 +477,14 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                             &revert_item,
                         );
                         last_revert_source = None;
+                        if dashboard.is_open() {
+                            dashboard.push_state(
+                                &config,
+                                &history,
+                                paused,
+                                monitor.last_backup.is_some(),
+                            );
+                        }
                     }
                     HudAction::Dismiss | HudAction::None => {}
                 }
@@ -167,6 +497,9 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                 log::info!("Quitting clop-rs via tray menu");
                 *control_flow = ControlFlow::Exit;
                 return;
+            } else if menu_event.id == open_dashboard_id {
+                dashboard.show(elwt);
+                dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
             } else if menu_event.id == pause_id {
                 paused = pause_item.is_checked();
                 if paused {
@@ -174,17 +507,26 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                 } else {
                     status_item.set_text("clop-rs — Watching Clipboard");
                 }
+                if dashboard.is_open() {
+                    dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
+                }
             } else if menu_event.id == smart_mode_id {
-                config.mode = if smart_mode_item.is_checked() {
-                    OptimizationMode::Smart
+                if smart_mode_item.is_checked() {
+                    config.apply_preset(OptimizationPreset::Balanced);
                 } else {
-                    OptimizationMode::Lossless
-                };
+                    config.apply_preset(OptimizationPreset::Lossless);
+                }
                 let _ = config.save();
+                if dashboard.is_open() {
+                    dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
+                }
                 log::info!("Switched optimization mode to {:?}", config.mode);
             } else if menu_event.id == strip_exif_id {
                 config.strip_metadata = strip_exif_item.is_checked();
                 let _ = config.save();
+                if dashboard.is_open() {
+                    dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
+                }
                 log::info!("Set strip_metadata to {}", config.strip_metadata);
             } else if menu_event.id == watch_downloads_id {
                 config.watch_downloads = watch_downloads_item.is_checked();
@@ -194,6 +536,9 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                     downloads.set_directory(None);
                 }
                 let _ = config.save();
+                if dashboard.is_open() {
+                    dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
+                }
                 log::info!("Set watch_downloads to {}", config.watch_downloads);
             } else if menu_event.id == context_menu_id {
                 let enable = context_menu_item.is_checked();
@@ -201,15 +546,24 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                     log::error!("Failed to toggle context menu: {}", err);
                     context_menu_item.set_checked(!enable);
                 }
+                if dashboard.is_open() {
+                    dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
+                }
             } else if menu_event.id == show_hud_id {
                 config.show_floating_hud = show_hud_item.is_checked();
                 hud.set_enabled(config.show_floating_hud, elwt);
                 let _ = config.save();
+                if dashboard.is_open() {
+                    dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
+                }
             } else if menu_event.id == autostart_id {
                 let enable = autostart_item.is_checked();
                 if let Err(err) = platform::set_autostart(enable) {
                     log::error!("Failed to toggle Launch at Login: {}", err);
                     autostart_item.set_checked(!enable);
+                }
+                if dashboard.is_open() {
+                    dashboard.push_state(&config, &history, paused, monitor.last_backup.is_some());
                 }
             } else if menu_event.id == revert_id {
                 if let Some(src) = last_revert_source.take() {
@@ -221,6 +575,14 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                         &status_item,
                         &revert_item,
                     );
+                    if dashboard.is_open() {
+                        dashboard.push_state(
+                            &config,
+                            &history,
+                            paused,
+                            monitor.last_backup.is_some(),
+                        );
+                    }
                 }
             } else if menu_event.id == optimize_now_id {
                 if let Some(pending) = monitor.inspect_new_image(true) {
@@ -235,6 +597,13 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                         Ok(Some(summary)) => {
                             last_revert_source = Some(RevertSource::Clipboard);
                             revert_item.set_enabled(true);
+                            history.record_summary(
+                                HistorySource::Clipboard,
+                                &summary,
+                                None,
+                                &config,
+                            );
+                            let _ = history.save();
                             update_tray_labels(
                                 &status_item,
                                 &session_item,
@@ -242,6 +611,14 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                                 &monitor.stats,
                             );
                             hud.show_completed(summary, RevertSource::Clipboard);
+                            if dashboard.is_open() {
+                                dashboard.push_state(
+                                    &config,
+                                    &history,
+                                    paused,
+                                    monitor.last_backup.is_some(),
+                                );
+                            }
                         }
                         Ok(None) => {
                             hud.hide();
@@ -277,6 +654,13 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                             Ok(Some(summary)) => {
                                 last_revert_source = Some(RevertSource::Clipboard);
                                 revert_item.set_enabled(true);
+                                history.record_summary(
+                                    HistorySource::Clipboard,
+                                    &summary,
+                                    None,
+                                    &config,
+                                );
+                                let _ = history.save();
                                 update_tray_labels(
                                     &status_item,
                                     &session_item,
@@ -284,6 +668,14 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                                     &monitor.stats,
                                 );
                                 hud.show_completed(summary, RevertSource::Clipboard);
+                                if dashboard.is_open() {
+                                    dashboard.push_state(
+                                        &config,
+                                        &history,
+                                        paused,
+                                        monitor.last_backup.is_some(),
+                                    );
+                                }
                             }
                             Ok(None) => {
                                 hud.hide();
@@ -297,6 +689,7 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
 
                     if config.watch_downloads {
                         if let Some(pending_file) = downloads.inspect_next_file(&config) {
+                            let file_path = pending_file.path.clone();
                             hud.show_optimizing(
                                 &pending_file.file_name,
                                 pending_file.width,
@@ -308,6 +701,13 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                                 Ok(Some(summary)) => {
                                     last_revert_source = Some(RevertSource::Downloads);
                                     revert_item.set_enabled(true);
+                                    history.record_summary(
+                                        HistorySource::Downloads,
+                                        &summary,
+                                        Some(&file_path),
+                                        &config,
+                                    );
+                                    let _ = history.save();
                                     monitor.stats.images_optimized += 1;
                                     monitor.stats.total_original_bytes +=
                                         summary.original_size as u64;
@@ -321,6 +721,14 @@ pub fn run_with_tray(mut config: AppConfig) -> Result<()> {
                                         &monitor.stats,
                                     );
                                     hud.show_completed(summary, RevertSource::Downloads);
+                                    if dashboard.is_open() {
+                                        dashboard.push_state(
+                                            &config,
+                                            &history,
+                                            paused,
+                                            monitor.last_backup.is_some(),
+                                        );
+                                    }
                                 }
                                 Ok(None) => {
                                     hud.hide();
@@ -357,6 +765,7 @@ pub fn run_file_with_hud(
     platform::configure_background_app();
 
     let mut hud = FloatingHud::new(&event_loop, true);
+    let mut history = OptimizationHistory::load();
     let mut backups: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     let mut started = false;
 
@@ -392,9 +801,9 @@ pub fn run_file_with_hud(
                 if let Ok(res) = optimizer::optimize_file(path, output.as_deref(), &config) {
                     let target_path = output.clone().unwrap_or_else(|| path.clone());
                     if res.was_modified && output.is_none() && !orig_bytes.is_empty() {
-                        backups.push((target_path, orig_bytes));
+                        backups.push((target_path.clone(), orig_bytes));
                     }
-                    last_summary = Some(OptimizationSummary {
+                    let summary = OptimizationSummary {
                         source_label: file_name,
                         width: res.width,
                         height: res.height,
@@ -405,7 +814,17 @@ pub fn run_file_with_hud(
                         exif_stripped: res.exif_stripped,
                         elapsed: res.elapsed,
                         thumbnail_64: thumb,
-                    });
+                    };
+                    if res.was_modified {
+                        history.record_summary(
+                            HistorySource::File,
+                            &summary,
+                            Some(&target_path),
+                            &config,
+                        );
+                        let _ = history.save();
+                    }
+                    last_summary = Some(summary);
                 }
             }
 

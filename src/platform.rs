@@ -68,6 +68,14 @@ pub fn configure_background_app() {
     }
 }
 
+/// Brings the app's visible windows (such as the Settings/Dashboard window) to the foreground.
+pub fn activate_app() {
+    #[cfg(target_os = "macos")]
+    {
+        macos::activate_app();
+    }
+}
+
 /// Enables or disables automatic startup at user login.
 pub fn set_autostart(enable: bool) -> Result<PathBuf> {
     let exe_path = env::current_exe().context("Failed to determine current executable path")?;
@@ -234,6 +242,18 @@ mod macos {
                     app,
                     setActivationPolicy: NSApplicationActivationPolicy::Accessory
                 ];
+            }
+        }
+    }
+
+    pub fn activate_app() {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        unsafe {
+            let cls = objc2::class!(NSApplication);
+            let app: *mut AnyObject = msg_send![cls, sharedApplication];
+            if !app.is_null() {
+                let _: () = msg_send![app, activateIgnoringOtherApps: true];
             }
         }
     }

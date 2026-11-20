@@ -341,7 +341,7 @@ fn optimize_object_body(body: &[u8], config: &AppConfig) -> (Vec<u8>, bool) {
                 )
                 .into_rgb8();
                 let mut reencoded = Vec::new();
-                let q = config.quality_max.clamp(55, 80);
+                let q = config.effective_pdf_jpeg_quality();
                 let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut reencoded, q);
                 if enc.encode_image(&rgb).is_ok() && reencoded.len() < best_jpeg.len() {
                     best_jpeg = reencoded;
@@ -470,10 +470,7 @@ fn try_ghostscript_pdf(input_path: &Path, config: &AppConfig) -> Option<Vec<u8>>
     let tmp_out = env::temp_dir().join(format!("clop_rs_pdf_{}.pdf", std::process::id()));
     let _ = fs::remove_file(&tmp_out);
 
-    let setting = match config.mode {
-        OptimizationMode::Smart => "/ebook",
-        OptimizationMode::Lossless => "/prepress",
-    };
+    let setting = config.effective_gs_pdf_setting();
 
     let status = Command::new(gs_bin)
         .args([
@@ -499,7 +496,7 @@ fn try_ghostscript_pdf(input_path: &Path, config: &AppConfig) -> Option<Vec<u8>>
     bytes
 }
 
-fn find_ghostscript() -> Option<PathBuf> {
+pub fn find_ghostscript() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         for candidate in ["/opt/homebrew/bin/gs", "/usr/local/bin/gs"] {
