@@ -1,6 +1,6 @@
 [package]
 name = "clop-rs"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Minimal-footprint cross-platform (macOS & Windows) clipboard, file, video & PDF optimizer inspired by Clop"
 license = "MIT"
