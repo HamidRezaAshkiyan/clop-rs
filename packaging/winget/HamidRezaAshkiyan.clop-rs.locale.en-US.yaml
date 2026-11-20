@@ -1,0 +1,32 @@
+# Created for clop-rs — WinGet DefaultLocale Manifest
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: HamidRezaAshkiyan.clop-rs
+PackageVersion: 0.4.1
+PackageLocale: en-US
+Publisher: HamidReza Ashkiyan
+PublisherUrl: https://github.com/HamidRezaAshkiyan
+PublisherSupportUrl: https://github.com/HamidRezaAshkiyan/clop-rs/issues
+Author: HamidReza Ashkiyan
+PackageName: clop-rs
+PackageUrl: https://github.com/HamidRezaAshkiyan/clop-rs
+License: MIT
+LicenseUrl: https://github.com/HamidRezaAshkiyan/clop-rs/blob/main/LICENSE
+ShortDescription: Minimal-footprint automatic clipboard, downloads, file, PDF & video optimizer
+Description: >-
+  clop-rs automatically optimizes clipboard images, Downloads folder media, and files on disk
+  (PNG, JPEG, WebP, BMP, TIFF, PDF, MP4, MOV, MKV, WebM, M4V, AVI) with a Floating HUD,
+  Dashboard & Settings UI, clipboard optimization history, quality-vs-size controls, and clop-cli.
+Moniker: clop-rs
+Tags:
+  - clipboard
+  - image-optimizer
+  - compression
+  - png
+  - pdf
+  - video
+  - cli
+  - rust
+ReleaseNotesUrl: https://github.com/HamidRezaAshkiyan/clop-rs/releases/tag/v0.4.1
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

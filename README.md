@@ -57,14 +57,38 @@ The non-intrusive **Floating HUD Panel** appears in the bottom-right corner when
 
 ## Installation & Build
 
-### Option 1: Download Prebuilt Installer (Recommended)
+### Option 1: Homebrew (macOS)
+Install both the macOS app (`clop-rs.app`) and CLI binaries (`clop-rs` & `clop-cli`) via Homebrew:
+```bash
+# Add the tap
+brew tap HamidRezaAshkiyan/clop-rs https://github.com/HamidRezaAshkiyan/clop-rs
+
+# Option A: Install full macOS App + CLI binaries (Cask — recommended)
+brew install --cask HamidRezaAshkiyan/clop-rs/clop-rs
+
+# Option B: Install CLI binaries only (Formula)
+brew install HamidRezaAshkiyan/clop-rs/clop-rs
+```
+
+### Option 2: WinGet (Windows)
+Install `clop-rs.exe` and `clop-cli.exe` via Windows Package Manager (`winget`):
+```powershell
+# Once published in winget-pkgs:
+winget install HamidRezaAshkiyan.clop-rs
+
+# Or install directly from the bundled manifest in this repository:
+winget settings --enable LocalManifestFiles
+winget install --manifest packaging\winget
+```
+
+### Option 3: Download Prebuilt Installer
 Download the latest installer from [**GitHub Releases**](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest):
 
-- **macOS (`.pkg` Installer)**: [`clop-rs-v0.3.0-macos-arm64.pkg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.3.0-macos-arm64.pkg) — Installs `/Applications/clop-rs.app`, `/usr/local/bin/clop-rs`, and the Finder Right-Click Quick Action.
-- **macOS (`.dmg` Disk Image)**: [`clop-rs-v0.3.0-macos-arm64.dmg`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.3.0-macos-arm64.dmg) — Drag-and-drop `clop-rs.app` to `Applications`.
-- **Windows (`.exe` / `.zip`)**: [`clop-rs-v0.3.0-windows-x64.exe`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.3.0-windows-x64.exe) / [`clop-rs-v0.3.0-windows-x64.zip`](https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/clop-rs-v0.3.0-windows-x64.zip)
+- **macOS (`.pkg` Installer)**: `clop-rs-<version>-macos-arm64.pkg` — Installs `/Applications/clop-rs.app`, `/usr/local/bin/clop-rs`, `/usr/local/bin/clop-cli`, and the Finder Right-Click Quick Action.
+- **macOS (`.dmg` Disk Image)**: `clop-rs-<version>-macos-arm64.dmg` — Drag-and-drop `clop-rs.app` to `Applications`.
+- **Windows (`.zip` / `.exe`)**: `clop-rs-<version>-windows-x64.zip` (includes `clop-rs.exe` and `clop-cli.exe`).
 
-### Option 2: One-Line Terminal Installer
+### Option 4: One-Line Terminal Installer
 
 **macOS**:
 ```bash
