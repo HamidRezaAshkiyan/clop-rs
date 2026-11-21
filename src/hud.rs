@@ -7,8 +7,11 @@ use tao::event::{ElementState, MouseButton, WindowEvent};
 use tao::event_loop::EventLoopWindowTarget;
 use tao::window::{Window, WindowBuilder, WindowId};
 
-pub const HUD_WIDTH: u32 = 360;
-pub const HUD_HEIGHT: u32 = 96;
+/// Logical toast dimensions (rendered internally at 2x supersampled HiDPI resolution).
+pub const HUD_WIDTH: u32 = 392;
+pub const HUD_HEIGHT: u32 = 104;
+const HUD_SCALE: u32 = 2;
+const FADE_IN_MS: f64 = 160.0;
 
 /// Target that should be reverted if the user clicks the `[REVERT]` button on the HUD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,11 +52,14 @@ pub enum HudAction {
     Dismiss,
 }
 
-/// Floating always-on-top HUD panel that displays a progress bar, before/after file sizes,
-/// thumbnail preview, EXIF badge, and interactive `[REVERT]` and `[X]` buttons.
+/// Floating always-on-top HUD toast that displays a HiDPI glassmorphic card with
+/// rounded corners, animated shimmer progress bar, before/after sizes, savings pill,
+/// elapsed time, thumbnail preview, EXIF badge, hover-to-pause indicator, and
+/// interactive `[REVERT]` and `[X]` buttons.
 pub struct FloatingHud {
     window: Option<Window>,
     pub phase: HudPhase,
+    shown_at: Option<Instant>,
     cursor_pos: Option<(f64, f64)>,
     hover_revert: bool,
     hover_close: bool,
@@ -70,6 +76,7 @@ impl FloatingHud {
         Self {
             window,
             phase: HudPhase::Hidden,
+            shown_at: None,
             cursor_pos: None,
             hover_revert: false,
             hover_close: false,
@@ -82,6 +89,7 @@ impl FloatingHud {
             .with_title("clop-rs")
             .with_inner_size(LogicalSize::new(HUD_WIDTH as f64, HUD_HEIGHT as f64))
             .with_decorations(false)
+            .with_transparent(true)
             .with_always_on_top(true)
             .with_resizable(false)
             .with_focused(false)
@@ -92,8 +100,8 @@ impl FloatingHud {
             let size = monitor.size();
             let logical_w = size.width as f64 / scale;
             let logical_h = size.height as f64 / scale;
-            let x = (logical_w - HUD_WIDTH as f64 - 24.0).max(16.0);
-            let y = (logical_h - HUD_HEIGHT as f64 - 64.0).max(16.0);
+            let x = (logical_w - HUD_WIDTH as f64 - 20.0).max(16.0);
+            let y = (logical_h - HUD_HEIGHT as f64 - 56.0).max(16.0);
             builder = builder.with_position(LogicalPosition::new(x, y));
         }
 
@@ -119,7 +127,7 @@ impl FloatingHud {
         self.enabled
     }
 
-    /// Displays the HUD immediately with an active progress bar while optimization is running.
+    /// Displays the HUD immediately with an active shimmer progress bar while optimization runs.
     pub fn show_optimizing(
         &mut self,
         source_label: &str,
@@ -131,31 +139,48 @@ impl FloatingHud {
         if !self.enabled {
             return;
         }
+        let was_hidden = matches!(self.phase, HudPhase::Hidden);
         self.phase = HudPhase::Optimizing {
-            title: format!("OPTIMIZING {}...", source_label.to_ascii_uppercase()),
-            subtitle: format!("{}x{}  ({})", width, height, format_bytes(estimated_size)),
+            title: format!(
+                "OPTIMIZING {}",
+                truncate_str(&source_label.to_ascii_uppercase(), 14)
+            ),
+            subtitle: if width > 0 && height > 0 {
+                format!("{}x{}  {}", width, height, format_bytes(estimated_size))
+            } else {
+                format_bytes(estimated_size)
+            },
             thumbnail_64,
             started_at: Instant::now(),
         };
+        if was_hidden {
+            self.shown_at = Some(Instant::now());
+        }
         if let Some(ref win) = self.window {
+            set_window_alpha(win, self.current_alpha());
             win.set_visible(true);
         }
         self.render();
     }
 
     /// Updates the HUD to show the completed before -> after size, percentage saved,
-    /// visual compression ratio bar, and `[REVERT]` button.
+    /// visual compression ratio bar, elapsed time, and `[REVERT]` button.
     pub fn show_completed(&mut self, summary: OptimizationSummary, revert_source: RevertSource) {
         if !self.enabled {
             return;
         }
+        let was_hidden = matches!(self.phase, HudPhase::Hidden);
         self.phase = HudPhase::Completed {
             summary,
             revert_source,
             completed_at: Instant::now(),
             duration: Duration::from_secs(6),
         };
+        if was_hidden {
+            self.shown_at = Some(Instant::now());
+        }
         if let Some(ref win) = self.window {
+            set_window_alpha(win, self.current_alpha());
             win.set_visible(true);
         }
         self.render();
@@ -172,6 +197,9 @@ impl FloatingHud {
             HudPhase::Reverted { thumbnail_64, .. } => thumbnail_64.clone(),
             HudPhase::Hidden => vec![0u8; 64 * 64 * 4],
         };
+        if matches!(self.phase, HudPhase::Hidden) {
+            self.shown_at = Some(Instant::now());
+        }
         self.phase = HudPhase::Reverted {
             source_label: source_label.to_string(),
             restored_size,
@@ -179,6 +207,7 @@ impl FloatingHud {
             reverted_at: Instant::now(),
         };
         if let Some(ref win) = self.window {
+            set_window_alpha(win, self.current_alpha());
             win.set_visible(true);
         }
         self.render();
@@ -186,6 +215,7 @@ impl FloatingHud {
 
     pub fn hide(&mut self) {
         self.phase = HudPhase::Hidden;
+        self.shown_at = None;
         self.cursor_pos = None;
         self.hover_revert = false;
         self.hover_close = false;
@@ -194,8 +224,20 @@ impl FloatingHud {
         }
     }
 
-    /// Periodic tick to animate the countdown bar and auto-dismiss the HUD when expired.
+    fn current_alpha(&self) -> f64 {
+        let Some(shown) = self.shown_at else {
+            return 1.0;
+        };
+        ease_out_cubic((shown.elapsed().as_secs_f64() * 1000.0) / FADE_IN_MS)
+    }
+
+    /// Periodic tick to animate fade-in, shimmer bar, countdown bar, and auto-dismiss when expired.
     pub fn tick(&mut self) {
+        if let Some(ref win) = self.window {
+            if !matches!(self.phase, HudPhase::Hidden) {
+                set_window_alpha(win, self.current_alpha());
+            }
+        }
         match &mut self.phase {
             HudPhase::Hidden => {}
             HudPhase::Optimizing { .. } => {
@@ -216,7 +258,9 @@ impl FloatingHud {
                 self.render();
             }
             HudPhase::Reverted { reverted_at, .. } => {
-                if reverted_at.elapsed() >= Duration::from_millis(2600) {
+                if self.cursor_pos.is_some() {
+                    *reverted_at = Instant::now();
+                } else if reverted_at.elapsed() >= Duration::from_millis(2600) {
                     self.hide();
                     return;
                 }
@@ -239,11 +283,15 @@ impl FloatingHud {
             } => {
                 let lx = *x / scale;
                 let ly = *y / scale;
+                let was_hovering = self.cursor_pos.is_some();
                 self.cursor_pos = Some((lx, ly));
                 let new_hover_revert =
                     is_in_revert_btn(lx, ly) && matches!(self.phase, HudPhase::Completed { .. });
                 let new_hover_close = is_in_close_btn(lx, ly);
-                if new_hover_revert != self.hover_revert || new_hover_close != self.hover_close {
+                if new_hover_revert != self.hover_revert
+                    || new_hover_close != self.hover_close
+                    || !was_hovering
+                {
                     self.hover_revert = new_hover_revert;
                     self.hover_close = new_hover_close;
                     self.render();
@@ -252,11 +300,9 @@ impl FloatingHud {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor_pos = None;
-                if self.hover_revert || self.hover_close {
-                    self.hover_revert = false;
-                    self.hover_close = false;
-                    self.render();
-                }
+                self.hover_revert = false;
+                self.hover_close = false;
+                self.render();
                 HudAction::None
             }
             WindowEvent::MouseInput {
@@ -281,7 +327,7 @@ impl FloatingHud {
         }
     }
 
-    /// Draws the current HUD state onto an RGBA canvas and blits it to the native window.
+    /// Draws the current HUD state onto a 2x HiDPI RGBA canvas and blits it to the native window.
     pub fn render(&self) {
         let Some(ref win) = self.window else {
             return;
@@ -290,33 +336,83 @@ impl FloatingHud {
             return;
         }
 
-        let mut canvas = Canvas::new(HUD_WIDTH, HUD_HEIGHT);
+        let canvas = self.render_to_canvas();
+        present_canvas_to_window(win, &canvas);
+    }
 
-        // 1. Card background & outer border
-        canvas.fill_rect(0, 0, HUD_WIDTH, HUD_HEIGHT, [18, 24, 34, 255]);
-        canvas.stroke_rect(0, 0, HUD_WIDTH, HUD_HEIGHT, [48, 62, 82, 255]);
-        canvas.stroke_rect(1, 1, HUD_WIDTH - 2, HUD_HEIGHT - 2, [30, 41, 59, 255]);
+    fn render_to_canvas(&self) -> Canvas {
+        let mut canvas = Canvas::new(HUD_WIDTH, HUD_HEIGHT, HUD_SCALE);
+        let hovering = self.cursor_pos.is_some();
+
+        // 1. Glassmorphic vertical gradient card with rounded corners
+        canvas.fill_rounded_gradient(
+            0,
+            0,
+            HUD_WIDTH,
+            HUD_HEIGHT,
+            14,
+            [20, 27, 40, 246],
+            [13, 18, 28, 250],
+        );
+
+        // Outer border (brightens slightly on hover to indicate paused auto-dismiss)
+        let border_col = if hovering {
+            [74, 96, 128, 255]
+        } else {
+            [45, 58, 79, 255]
+        };
+        canvas.stroke_rounded_rect(0, 0, HUD_WIDTH, HUD_HEIGHT, 14, border_col);
+        // Subtle inner top specular highlight
+        canvas.fill_rect(14, 1, HUD_WIDTH - 28, 1, [255, 255, 255, 22]);
+
+        // Left status accent pill
+        let accent_col = match &self.phase {
+            HudPhase::Optimizing { .. } => [56, 189, 248, 255], // Sky blue
+            HudPhase::Completed { .. } => [16, 185, 129, 255],  // Emerald
+            HudPhase::Reverted { .. } => [245, 158, 11, 255],   // Amber
+            HudPhase::Hidden => [71, 85, 105, 255],
+        };
+        canvas.fill_rounded_rect(5, 14, 3, HUD_HEIGHT - 28, 2, accent_col);
 
         match &self.phase {
-            HudPhase::Hidden => return,
+            HudPhase::Hidden => {}
             HudPhase::Optimizing {
                 title,
                 subtitle,
                 thumbnail_64,
                 started_at,
             } => {
-                canvas.draw_thumbnail(14, 16, thumbnail_64);
-                canvas.draw_text(90, 16, title, 1, [56, 189, 248, 255]);
-                canvas.draw_text(90, 36, subtitle, 2, [241, 245, 249, 255]);
+                canvas.draw_rounded_thumbnail(16, 18, thumbnail_64, 8);
+                canvas.draw_text(92, 16, title, 1, [56, 189, 248, 255]);
+                canvas.draw_text(92, 37, subtitle, 2, [241, 245, 249, 255]);
 
-                // Animated progress bar (x: 90..344, y: 64..76)
-                let bar_w = 254u32;
-                canvas.fill_rect(90, 64, bar_w, 12, [30, 41, 59, 255]);
+                // Close button
+                draw_close_button(&mut canvas, self.hover_close);
+
+                // Animated shimmer progress bar (x: 92..374, y: 69..81)
+                let bar_x = 92u32;
+                let bar_y = 69u32;
+                let bar_w = 282u32;
+                let bar_h = 10u32;
+                canvas.fill_rounded_rect(bar_x, bar_y, bar_w, bar_h, 5, [30, 41, 59, 255]);
+
                 let elapsed_ms = started_at.elapsed().as_millis() as u32;
-                let fill_w =
-                    ((bar_w * 35) / 100 + (elapsed_ms / 4) % (bar_w * 60 / 100)).min(bar_w);
-                canvas.fill_rect(90, 64, fill_w, 12, [16, 185, 129, 255]);
-                canvas.stroke_rect(90, 64, bar_w, 12, [51, 65, 85, 255]);
+                let shimmer_w = 88u32;
+                let cycle = bar_w + shimmer_w;
+                let pos = (elapsed_ms / 4) % cycle;
+                let seg_start = pos.saturating_sub(shimmer_w);
+                let seg_end = pos.min(bar_w);
+                if seg_end > seg_start {
+                    canvas.fill_rounded_rect(
+                        bar_x + seg_start,
+                        bar_y,
+                        seg_end - seg_start,
+                        bar_h,
+                        5,
+                        [56, 189, 248, 255],
+                    );
+                }
+                canvas.stroke_rounded_rect(bar_x, bar_y, bar_w, bar_h, 5, [51, 65, 85, 255]);
             }
             HudPhase::Completed {
                 summary,
@@ -324,28 +420,34 @@ impl FloatingHud {
                 duration,
                 ..
             } => {
-                canvas.draw_thumbnail(14, 16, &summary.thumbnail_64);
+                canvas.draw_rounded_thumbnail(16, 18, &summary.thumbnail_64, 8);
 
-                // Header: e.g. "OPTIMIZED CLIPBOARD (-76.7%)"
-                let src = truncate_str(&summary.source_label.to_ascii_uppercase(), 12);
-                let header = if summary.saved_percent >= 0.1 {
-                    format!("{} -{:.1}%", src, summary.saved_percent)
-                } else {
-                    format!("{} OPTIMIZED", src)
-                };
-                canvas.draw_text(90, 15, &header, 1, [52, 211, 153, 255]);
+                // Top metadata row: Source label + Savings pill + optional [EXIF] pill
+                let src = truncate_str(&summary.source_label.to_ascii_uppercase(), 10);
+                canvas.draw_text(92, 16, &src, 1, [148, 163, 184, 255]);
 
-                // Optional [EXIF] badge if EXIF metadata was stripped
-                if summary.exif_stripped {
-                    let bx = 90 + (header.len() as u32 * 6) + 6;
-                    if bx + 34 < 244 {
-                        canvas.fill_rect(bx, 13, 30, 11, [6, 78, 59, 255]);
-                        canvas.stroke_rect(bx, 13, 30, 11, [16, 185, 129, 255]);
-                        canvas.draw_text(bx + 3, 15, "EXIF", 1, [167, 243, 208, 255]);
+                let mut badge_x = 92 + (src.len() as u32 * 6) + 7;
+                if summary.saved_percent >= 0.1 {
+                    let pct = format!("-{:.1}%", summary.saved_percent);
+                    let pill_w = (pct.len() as u32 * 6) + 10;
+                    if badge_x + pill_w < 276 {
+                        canvas.fill_rounded_rect(badge_x, 12, pill_w, 15, 7, [6, 78, 59, 255]);
+                        canvas.stroke_rounded_rect(badge_x, 12, pill_w, 15, 7, [16, 185, 129, 255]);
+                        canvas.draw_text(badge_x + 5, 16, &pct, 1, [167, 243, 208, 255]);
+                        badge_x += pill_w + 5;
                     }
                 }
 
-                // Interactive [REVERT] button (x: 248..320, y: 11..29)
+                if summary.exif_stripped {
+                    let exif_w = 34u32;
+                    if badge_x + exif_w < 276 {
+                        canvas.fill_rounded_rect(badge_x, 12, exif_w, 15, 7, [30, 58, 138, 255]);
+                        canvas.stroke_rounded_rect(badge_x, 12, exif_w, 15, 7, [96, 165, 250, 255]);
+                        canvas.draw_text(badge_x + 5, 16, "EXIF", 1, [191, 219, 254, 255]);
+                    }
+                }
+
+                // Interactive rounded [REVERT] button (x: 280..350, y: 11..30)
                 let rev_bg = if self.hover_revert {
                     [37, 99, 235, 255]
                 } else {
@@ -356,75 +458,133 @@ impl FloatingHud {
                 } else {
                     [71, 85, 105, 255]
                 };
-                canvas.fill_rect(248, 11, 72, 18, rev_bg);
-                canvas.stroke_rect(248, 11, 72, 18, rev_border);
-                canvas.draw_text(266, 16, "REVERT", 1, [248, 250, 252, 255]);
+                canvas.fill_rounded_rect(280, 11, 70, 19, 6, rev_bg);
+                canvas.stroke_rounded_rect(280, 11, 70, 19, 6, rev_border);
+                canvas.draw_text(297, 17, "REVERT", 1, [248, 250, 252, 255]);
 
-                // Interactive [X] close button (x: 326..346, y: 11..29)
-                let cls_bg = if self.hover_close {
-                    [185, 28, 28, 255]
-                } else {
-                    [30, 41, 59, 255]
-                };
-                canvas.fill_rect(326, 11, 20, 18, cls_bg);
-                canvas.stroke_rect(326, 11, 20, 18, [71, 85, 105, 255]);
-                canvas.draw_text(334, 16, "X", 1, [226, 232, 240, 255]);
+                // Interactive rounded [X] close button (x: 356..376, y: 11..30)
+                draw_close_button(&mut canvas, self.hover_close);
 
-                // Main size comparison in large 2x font: "445.7 KB -> 103.7 KB"
+                // Main size comparison in crisp 2x font: "445.7 KB -> 103.7 KB"
                 let size_line = format!(
                     "{} -> {}",
                     format_bytes(summary.original_size),
                     format_bytes(summary.optimized_size)
                 );
-                canvas.draw_text(90, 38, &size_line, 2, [248, 250, 252, 255]);
+                canvas.draw_text(92, 39, &size_line, 2, [248, 250, 252, 255]);
 
-                // Compression ratio progress bar (x: 90..346, y: 64..76)
-                let bar_w = 256u32;
-                canvas.fill_rect(90, 64, bar_w, 12, [6, 78, 59, 255]);
+                // Compression ratio progress bar (x: 92..376, y: 66..76)
+                let bar_w = 284u32;
+                canvas.fill_rounded_rect(92, 66, bar_w, 10, 5, [6, 78, 59, 180]);
                 let ratio = if summary.original_size > 0 {
-                    (summary.optimized_size as f64 / summary.original_size as f64).clamp(0.05, 1.0)
+                    (summary.optimized_size as f64 / summary.original_size as f64).clamp(0.06, 1.0)
                 } else {
                     1.0
                 };
                 let new_w = ((bar_w as f64) * ratio).round() as u32;
-                canvas.fill_rect(90, 64, new_w, 12, [16, 185, 129, 255]);
-                canvas.stroke_rect(90, 64, bar_w, 12, [52, 211, 153, 255]);
+                canvas.fill_rounded_rect(92, 66, new_w.max(10), 10, 5, [16, 185, 129, 255]);
+                canvas.stroke_rounded_rect(92, 66, bar_w, 10, 5, [52, 211, 153, 180]);
 
-                // Bottom countdown bar (y: 92..95)
+                // Footer micro-info: saved bytes + elapsed time (or PAUSED on hover)
+                let footer_left = format!(
+                    "SAVED {}  ({})",
+                    format_bytes(summary.saved_bytes),
+                    format_elapsed(summary.elapsed)
+                );
+                canvas.draw_text(92, 82, &footer_left, 1, [148, 163, 184, 255]);
+
+                if hovering {
+                    canvas.draw_text(336, 82, "PAUSED", 1, [251, 191, 36, 255]);
+                }
+
+                // Smooth bottom countdown bar (y: 98..101)
                 let elapsed = completed_at.elapsed().as_secs_f64();
                 let total = duration.as_secs_f64().max(0.1);
-                let rem = (1.0 - elapsed / total).clamp(0.0, 1.0);
-                let rem_w = ((HUD_WIDTH as f64 - 4.0) * rem).round() as u32;
-                canvas.fill_rect(2, 92, rem_w, 2, [52, 211, 153, 200]);
+                let rem = if hovering {
+                    1.0
+                } else {
+                    (1.0 - elapsed / total).clamp(0.0, 1.0)
+                };
+                let rem_w = ((HUD_WIDTH as f64 - 28.0) * rem).round() as u32;
+                if rem_w > 2 {
+                    let bar_col = if hovering {
+                        [251, 191, 36, 180]
+                    } else {
+                        [52, 211, 153, 210]
+                    };
+                    canvas.fill_rounded_rect(14, 98, rem_w, 3, 2, bar_col);
+                }
             }
             HudPhase::Reverted {
                 source_label,
                 restored_size,
                 thumbnail_64,
-                ..
+                reverted_at,
             } => {
-                canvas.draw_thumbnail(14, 16, thumbnail_64);
+                canvas.draw_rounded_thumbnail(16, 18, thumbnail_64, 8);
                 let header = format!(
                     "REVERTED {}",
                     truncate_str(&source_label.to_ascii_uppercase(), 14)
                 );
-                canvas.draw_text(90, 18, &header, 1, [251, 191, 36, 255]);
-                let msg = format!("Restored {}", format_bytes(*restored_size));
-                canvas.draw_text(90, 38, &msg, 2, [248, 250, 252, 255]);
-                canvas.fill_rect(90, 64, 256, 12, [217, 119, 6, 255]);
+                canvas.draw_text(92, 16, &header, 1, [251, 191, 36, 255]);
+                draw_close_button(&mut canvas, self.hover_close);
+
+                let msg = format!("RESTORED {}", format_bytes(*restored_size));
+                canvas.draw_text(92, 39, &msg, 2, [248, 250, 252, 255]);
+                canvas.fill_rounded_rect(92, 66, 284, 10, 5, [217, 119, 6, 220]);
+
+                let rem = if hovering {
+                    1.0
+                } else {
+                    (1.0 - reverted_at.elapsed().as_secs_f64() / 2.6).clamp(0.0, 1.0)
+                };
+                let rem_w = ((HUD_WIDTH as f64 - 28.0) * rem).round() as u32;
+                if rem_w > 2 {
+                    canvas.fill_rounded_rect(14, 98, rem_w, 3, 2, [251, 191, 36, 200]);
+                }
             }
         }
 
-        present_canvas_to_window(win, &canvas);
+        canvas
     }
 }
 
+fn draw_close_button(canvas: &mut Canvas, hover_close: bool) {
+    let cls_bg = if hover_close {
+        [185, 28, 28, 255]
+    } else {
+        [30, 41, 59, 255]
+    };
+    let cls_border = if hover_close {
+        [248, 113, 113, 255]
+    } else {
+        [71, 85, 105, 255]
+    };
+    canvas.fill_rounded_rect(356, 11, 20, 19, 6, cls_bg);
+    canvas.stroke_rounded_rect(356, 11, 20, 19, 6, cls_border);
+    canvas.draw_text(364, 17, "X", 1, [226, 232, 240, 255]);
+}
+
 fn is_in_revert_btn(x: f64, y: f64) -> bool {
-    (248.0..=320.0).contains(&x) && (11.0..=29.0).contains(&y)
+    (280.0..=350.0).contains(&x) && (11.0..=30.0).contains(&y)
 }
 
 fn is_in_close_btn(x: f64, y: f64) -> bool {
-    (326.0..=346.0).contains(&x) && (11.0..=29.0).contains(&y)
+    (356.0..=376.0).contains(&x) && (11.0..=30.0).contains(&y)
+}
+
+fn ease_out_cubic(t: f64) -> f64 {
+    let c = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - c).powi(3)
+}
+
+fn format_elapsed(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        format!("{}MS", ms)
+    } else {
+        format!("{:.1}S", d.as_secs_f64())
+    }
 }
 
 fn truncate_str(s: &str, max_chars: usize) -> String {
@@ -437,91 +597,225 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Supersampled RGBA software canvas supporting alpha blending, gradients,
+/// and anti-aliased rounded rectangles.
 struct Canvas {
     width: u32,
     height: u32,
+    scale: u32,
     rgba: Vec<u8>,
 }
 
 impl Canvas {
-    fn new(width: u32, height: u32) -> Self {
+    fn new(logical_width: u32, logical_height: u32, scale: u32) -> Self {
+        let scale = scale.max(1);
+        let width = logical_width * scale;
+        let height = logical_height * scale;
         Self {
             width,
             height,
+            scale,
             rgba: vec![0u8; (width * height * 4) as usize],
         }
     }
 
-    fn set_px(&mut self, x: u32, y: u32, color: [u8; 4]) {
-        if x < self.width && y < self.height {
-            let idx = ((y * self.width + x) * 4) as usize;
-            self.rgba[idx..idx + 4].copy_from_slice(&color);
+    fn blend_px(&mut self, px: u32, py: u32, color: [u8; 4]) {
+        if px >= self.width || py >= self.height || color[3] == 0 {
+            return;
         }
+        let idx = ((py * self.width + px) * 4) as usize;
+        let sa = color[3] as f32 / 255.0;
+        let da = self.rgba[idx + 3] as f32 / 255.0;
+        let out_a = sa + da * (1.0 - sa);
+        if out_a <= 0.0 {
+            return;
+        }
+        let blend = |sc: u8, dc: u8| -> u8 {
+            (((sc as f32 * sa) + (dc as f32 * da * (1.0 - sa))) / out_a)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        self.rgba[idx] = blend(color[0], self.rgba[idx]);
+        self.rgba[idx + 1] = blend(color[1], self.rgba[idx + 1]);
+        self.rgba[idx + 2] = blend(color[2], self.rgba[idx + 2]);
+        self.rgba[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
     }
 
     fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
-        let x_end = (x + w).min(self.width);
-        let y_end = (y + h).min(self.height);
-        for py in y..y_end {
-            for px in x..x_end {
-                self.set_px(px, py, color);
+        let sx = x * self.scale;
+        let sy = y * self.scale;
+        let x_end = (sx + w * self.scale).min(self.width);
+        let y_end = (sy + h * self.scale).min(self.height);
+        for py in sy..y_end {
+            for px in sx..x_end {
+                self.blend_px(px, py, color);
             }
         }
     }
 
-    fn stroke_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
-        if w == 0 || h == 0 {
-            return;
-        }
-        for px in x..(x + w).min(self.width) {
-            self.set_px(px, y, color);
-            self.set_px(px, (y + h - 1).min(self.height - 1), color);
-        }
-        for py in y..(y + h).min(self.height) {
-            self.set_px(x, py, color);
-            self.set_px((x + w - 1).min(self.width - 1), py, color);
+    #[allow(clippy::too_many_arguments)]
+    fn fill_rounded_gradient(
+        &mut self,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        radius: u32,
+        top: [u8; 4],
+        bottom: [u8; 4],
+    ) {
+        let sx = x * self.scale;
+        let sy = y * self.scale;
+        let sw = w * self.scale;
+        let sh = h * self.scale;
+        let r = (radius * self.scale).min(sw / 2).min(sh / 2) as f32;
+        let x_end = (sx + sw).min(self.width);
+        let y_end = (sy + sh).min(self.height);
+
+        for py in sy..y_end {
+            let t = if sh > 1 {
+                (py - sy) as f32 / (sh - 1) as f32
+            } else {
+                0.0
+            };
+            let base = lerp_color(top, bottom, t);
+            for px in sx..x_end {
+                let cov = rounded_rect_coverage(
+                    (px - sx) as f32 + 0.5,
+                    (py - sy) as f32 + 0.5,
+                    sw as f32,
+                    sh as f32,
+                    r,
+                );
+                if cov > 0.0 {
+                    let mut c = base;
+                    c[3] = ((c[3] as f32) * cov).round() as u8;
+                    self.blend_px(px, py, c);
+                }
+            }
         }
     }
 
-    fn draw_thumbnail(&mut self, x: u32, y: u32, thumb_64: &[u8]) {
-        self.fill_rect(x, y, 64, 64, [15, 23, 42, 255]);
+    fn fill_rounded_rect(&mut self, x: u32, y: u32, w: u32, h: u32, radius: u32, color: [u8; 4]) {
+        self.fill_rounded_gradient(x, y, w, h, radius, color, color);
+    }
+
+    fn stroke_rounded_rect(&mut self, x: u32, y: u32, w: u32, h: u32, radius: u32, color: [u8; 4]) {
+        let sx = x * self.scale;
+        let sy = y * self.scale;
+        let sw = w * self.scale;
+        let sh = h * self.scale;
+        let r = (radius * self.scale).min(sw / 2).min(sh / 2) as f32;
+        let thickness = self.scale as f32;
+        let x_end = (sx + sw).min(self.width);
+        let y_end = (sy + sh).min(self.height);
+
+        for py in sy..y_end {
+            for px in sx..x_end {
+                let fx = (px - sx) as f32 + 0.5;
+                let fy = (py - sy) as f32 + 0.5;
+                let outer = rounded_rect_coverage(fx, fy, sw as f32, sh as f32, r);
+                if outer <= 0.0 {
+                    continue;
+                }
+                let inner = rounded_rect_coverage(
+                    fx - thickness,
+                    fy - thickness,
+                    (sw as f32 - 2.0 * thickness).max(0.0),
+                    (sh as f32 - 2.0 * thickness).max(0.0),
+                    (r - thickness).max(0.0),
+                );
+                let ring = (outer - inner).clamp(0.0, 1.0);
+                if ring > 0.0 {
+                    let mut c = color;
+                    c[3] = ((c[3] as f32) * ring).round() as u8;
+                    self.blend_px(px, py, c);
+                }
+            }
+        }
+    }
+
+    fn draw_rounded_thumbnail(&mut self, x: u32, y: u32, thumb_64: &[u8], radius: u32) {
+        self.fill_rounded_rect(x, y, 64, 64, radius, [15, 23, 42, 255]);
         if thumb_64.len() >= 64 * 64 * 4 {
-            for ty in 0..64u32 {
-                for tx in 0..64u32 {
+            let sx = x * self.scale;
+            let sy = y * self.scale;
+            let sw = 64 * self.scale;
+            let sh = 64 * self.scale;
+            let r = (radius * self.scale) as f32;
+            for py in 0..sh {
+                let ty = (py / self.scale).min(63);
+                for px in 0..sw {
+                    let cov = rounded_rect_coverage(
+                        px as f32 + 0.5,
+                        py as f32 + 0.5,
+                        sw as f32,
+                        sh as f32,
+                        r,
+                    );
+                    if cov <= 0.0 {
+                        continue;
+                    }
+                    let tx = (px / self.scale).min(63);
                     let sidx = ((ty * 64 + tx) * 4) as usize;
-                    let a = thumb_64[sidx + 3] as u32;
+                    let a = ((thumb_64[sidx + 3] as f32) * cov).round() as u8;
                     if a > 0 {
-                        let r = (thumb_64[sidx] as u32 * a + 15 * (255 - a)) / 255;
-                        let g = (thumb_64[sidx + 1] as u32 * a + 23 * (255 - a)) / 255;
-                        let b = (thumb_64[sidx + 2] as u32 * a + 42 * (255 - a)) / 255;
-                        self.set_px(x + tx, y + ty, [r as u8, g as u8, b as u8, 255]);
+                        self.blend_px(
+                            sx + px,
+                            sy + py,
+                            [thumb_64[sidx], thumb_64[sidx + 1], thumb_64[sidx + 2], a],
+                        );
                     }
                 }
             }
         }
-        self.stroke_rect(x, y, 64, 64, [71, 85, 105, 255]);
+        self.stroke_rounded_rect(x, y, 64, 64, radius, [71, 85, 105, 220]);
     }
 
-    fn draw_text(&mut self, x: u32, y: u32, text: &str, scale: u32, color: [u8; 4]) {
+    fn draw_text(&mut self, x: u32, y: u32, text: &str, text_scale: u32, color: [u8; 4]) {
         let mut cursor_x = x;
-        let scale = scale.max(1);
+        let ts = text_scale.max(1);
+        let logical_w = self.width / self.scale;
         for ch in text.chars() {
             let glyph = glyph_5x7(ch);
             for (row_idx, &row_bits) in glyph.iter().enumerate() {
                 for col_idx in 0..5u32 {
                     if (row_bits >> (4 - col_idx)) & 1 == 1 {
-                        let gx = cursor_x + col_idx * scale;
-                        let gy = y + (row_idx as u32) * scale;
-                        self.fill_rect(gx, gy, scale, scale, color);
+                        let gx = cursor_x + col_idx * ts;
+                        let gy = y + (row_idx as u32) * ts;
+                        self.fill_rect(gx, gy, ts, ts, color);
                     }
                 }
             }
-            cursor_x += 6 * scale;
-            if cursor_x >= self.width - 4 {
+            cursor_x += 6 * ts;
+            if cursor_x >= logical_w.saturating_sub(6) {
                 break;
             }
         }
     }
+}
+
+fn lerp_color(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        (a[0] as f32 + (b[0] as f32 - a[0] as f32) * t).round() as u8,
+        (a[1] as f32 + (b[1] as f32 - a[1] as f32) * t).round() as u8,
+        (a[2] as f32 + (b[2] as f32 - a[2] as f32) * t).round() as u8,
+        (a[3] as f32 + (b[3] as f32 - a[3] as f32) * t).round() as u8,
+    ]
+}
+
+/// Signed-distance anti-aliased coverage (0.0..=1.0) for a rounded rectangle.
+fn rounded_rect_coverage(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
+    if w <= 0.0 || h <= 0.0 {
+        return 0.0;
+    }
+    let hx = w * 0.5;
+    let hy = h * 0.5;
+    let cx = (px - hx).abs() - (hx - r);
+    let cy = (py - hy).abs() - (hy - r);
+    let dist = (cx.max(0.0).powi(2) + cy.max(0.0).powi(2)).sqrt() + cx.max(cy).min(0.0) - r;
+    (0.5 - dist).clamp(0.0, 1.0)
 }
 
 /// 5x7 bitmap font for crisp HUD rendering without external font file dependencies.
@@ -688,10 +982,16 @@ fn configure_non_activating_panel(window: &Window) {
                     let ns_view = appkit.ns_view.as_ptr() as *mut AnyObject;
                     if !ns_view.is_null() {
                         let _: () = msg_send![ns_view, setWantsLayer: true];
+                        let layer: *mut AnyObject = msg_send![ns_view, layer];
+                        if !layer.is_null() {
+                            let _: () = msg_send![layer, setCornerRadius: 14.0f64];
+                            let _: () = msg_send![layer, setMasksToBounds: true];
+                        }
                         let ns_win: *mut AnyObject = msg_send![ns_view, window];
                         if !ns_win.is_null() {
                             // NSStatusWindowLevel (25) so it floats above normal windows
                             let _: () = msg_send![ns_win, setLevel: 25isize];
+                            let _: () = msg_send![ns_win, setOpaque: false];
                             let _: () = msg_send![ns_win, setHasShadow: true];
                         }
                     }
@@ -702,6 +1002,31 @@ fn configure_non_activating_panel(window: &Window) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = window;
+    }
+}
+
+fn set_window_alpha(window: &Window, alpha: f64) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(handle) = window.window_handle() {
+            if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+                unsafe {
+                    use objc2::msg_send;
+                    use objc2::runtime::AnyObject;
+                    let ns_view = appkit.ns_view.as_ptr() as *mut AnyObject;
+                    if !ns_view.is_null() {
+                        let ns_win: *mut AnyObject = msg_send![ns_view, window];
+                        if !ns_win.is_null() {
+                            let _: () = msg_send![ns_win, setAlphaValue: alpha.clamp(0.0, 1.0)];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, alpha);
     }
 }
 
@@ -765,11 +1090,15 @@ fn present_canvas_to_window(window: &Window, canvas: &Canvas) {
                 return;
             }
 
-            // Convert RGBA to BGRA top-down DIB
+            // Convert RGBA to BGRA top-down DIB (composite transparent corners onto dark slate)
             let mut bgra = Vec::with_capacity(canvas.rgba.len());
             #[allow(clippy::chunks_exact_to_as_chunks)]
             for px in canvas.rgba.chunks_exact(4) {
-                bgra.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+                let a = px[3] as u32;
+                let r = (px[0] as u32 * a + 13 * (255 - a)) / 255;
+                let g = (px[1] as u32 * a + 18 * (255 - a)) / 255;
+                let b = (px[2] as u32 * a + 28 * (255 - a)) / 255;
+                bgra.extend_from_slice(&[b as u8, g as u8, r as u8, 255]);
             }
 
             let phys_size = window.inner_size();
@@ -813,5 +1142,48 @@ fn present_canvas_to_window(window: &Window, canvas: &Canvas) {
             ReleaseDC(hwnd, hdc);
         },
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hud_hit_testing_and_easing() {
+        assert!(is_in_revert_btn(300.0, 20.0));
+        assert!(!is_in_revert_btn(200.0, 20.0));
+        assert!(is_in_close_btn(366.0, 20.0));
+        assert!(!is_in_close_btn(300.0, 20.0));
+
+        assert_eq!(ease_out_cubic(0.0), 0.0);
+        assert_eq!(ease_out_cubic(1.0), 1.0);
+        assert!(ease_out_cubic(0.5) > 0.8);
+
+        assert_eq!(format_elapsed(Duration::from_millis(42)), "42MS");
+        assert_eq!(format_elapsed(Duration::from_millis(1500)), "1.5S");
+    }
+
+    #[test]
+    fn test_hud_supersampled_canvas_rounded_rect() {
+        let mut canvas = Canvas::new(HUD_WIDTH, HUD_HEIGHT, HUD_SCALE);
+        assert_eq!(canvas.width, HUD_WIDTH * HUD_SCALE);
+        assert_eq!(canvas.height, HUD_HEIGHT * HUD_SCALE);
+
+        canvas.fill_rounded_gradient(
+            0,
+            0,
+            HUD_WIDTH,
+            HUD_HEIGHT,
+            14,
+            [20, 27, 40, 246],
+            [13, 18, 28, 250],
+        );
+
+        // Top-left corner pixel (0, 0) should be fully transparent outside the 14px radius
+        assert_eq!(canvas.rgba[3], 0);
+        // Center pixel should be opaque card fill
+        let center_idx = (((canvas.height / 2) * canvas.width + (canvas.width / 2)) * 4) as usize;
+        assert!(canvas.rgba[center_idx + 3] >= 245);
     }
 }
