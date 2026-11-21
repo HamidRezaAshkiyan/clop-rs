@@ -8,6 +8,11 @@
   A minimal-footprint, cross-platform (<strong>macOS</strong> &amp; <strong>Windows</strong>) automatic clipboard &amp; downloads image optimizer written in pure <strong>Rust</strong>, inspired by <a href="https://github.com/FuzzyIdeas/Clop">FuzzyIdeas/Clop</a>.
 </p>
 
+<p align="center">
+  <a href="https://hamidrezaashkiyan.github.io/clop-rs/"><strong>🌐 Project Website</strong></a> ·
+  <a href="https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest"><strong>📦 Latest Release</strong></a>
+</p>
+
 Whenever you copy an image or screenshot to your clipboard, `clop-rs` silently optimizes it in-place in milliseconds (typically **60–85% smaller**) so you can immediately paste tiny, fast-loading images into Slack, Discord, GitHub, Notion, browsers, or emails.
 
 ---
