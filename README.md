@@ -185,7 +185,19 @@ clop-cli history --clear
 clop-cli config set preset high-quality
 clop-cli config set quality 88
 clop-cli config show
+
+# Launch the interactive OpenCode-style TUI
+clop-cli tui --watch
+clop-cli tui --theme tokyo ./screenshots
 ```
+
+### 7. Interactive Terminal UI (OpenCode-Style TUI)
+Launch an interactive, keyboard-driven TUI right in your terminal via `clop-cli tui` (or `clop-rs tui`):
+- **`/` Slash Commands** with live autocomplete (`/optimize`, `/clipboard`, `/watch`, `/downloads`, `/preset`, `/quality`, `/exif`, `/undo`, `/history`, `/details`, `/theme`, `/help`, `/exit`).
+- **`@` Fuzzy File Picker** to select and optimize images, PDFs, and videos in your current workspace.
+- **`!` Inline Shell Commands** (e.g. `!ls -lh`) displayed directly in the activity feed.
+- **`Ctrl+X` Leader Key Combos**: `Ctrl+X c` (clipboard), `Ctrl+X w` (watch), `Ctrl+X p` (cycle preset), `Ctrl+X u` (undo), `Ctrl+X t` (cycle theme), `Ctrl+X d` (toggle sidebar), `Ctrl+X h` (help), `Ctrl+X q` (quit).
+- **4 Built-in Themes**: `opencode-dark`, `tokyo-night`, `catppuccin`, and `gruvbox`.
 
 ### 7. Enable / Disable Launch at Login
 ```bash

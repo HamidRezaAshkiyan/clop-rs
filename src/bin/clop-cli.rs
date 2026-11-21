@@ -191,6 +191,27 @@ enum CliCommand {
         #[command(flatten)]
         opts: OptimizeFlags,
     },
+
+    /// Launch the interactive OpenCode-style Terminal User Interface (TUI).
+    Tui {
+        /// Optional working directory for `@file` picking and `!shell` commands.
+        path: Option<PathBuf>,
+
+        /// Start with live clipboard watching enabled.
+        #[arg(long, short = 'w')]
+        watch: bool,
+
+        /// Start with Downloads folder watching enabled.
+        #[arg(long)]
+        downloads: bool,
+
+        /// Color theme (`dark`, `tokyo`, `catppuccin`, `gruvbox`).
+        #[arg(long, default_value = "dark")]
+        theme: String,
+
+        #[command(flatten)]
+        opts: OptimizeFlags,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -607,6 +628,25 @@ fn main() -> Result<()> {
                         .join(", ")
                 );
             }
+        }
+
+        CliCommand::Tui {
+            path,
+            watch,
+            downloads,
+            theme,
+            opts,
+        } => {
+            opts.apply_to(&mut config);
+            let launch = clop_rs::tui::TuiLaunchOptions {
+                work_dir: path
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
+                watch_clipboard: watch,
+                watch_downloads: downloads,
+                theme: clop_rs::tui::TuiTheme::from_name(&theme)
+                    .unwrap_or(clop_rs::tui::TuiTheme::OpenCodeDark),
+            };
+            clop_rs::tui::run_tui(config, launch)?;
         }
 
         CliCommand::Watch {

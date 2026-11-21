@@ -8,5 +8,6 @@ pub mod optimizer;
 pub mod pdf;
 pub mod platform;
 pub mod tray;
+pub mod tui;
 pub mod ui;
 pub mod video;

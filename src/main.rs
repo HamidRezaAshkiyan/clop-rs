@@ -29,6 +29,23 @@ fn main() -> Result<()> {
             Commands::Ui => {
                 return tray::run_with_tray(config, true);
             }
+            Commands::Tui {
+                path,
+                watch,
+                downloads,
+                theme,
+            } => {
+                let opts = clop_rs::tui::TuiLaunchOptions {
+                    work_dir: path
+                        .clone()
+                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
+                    watch_clipboard: *watch,
+                    watch_downloads: *downloads,
+                    theme: clop_rs::tui::TuiTheme::from_name(theme)
+                        .unwrap_or(clop_rs::tui::TuiTheme::OpenCodeDark),
+                };
+                return clop_rs::tui::run_tui(config, opts);
+            }
             Commands::History {
                 clipboard,
                 clear,
