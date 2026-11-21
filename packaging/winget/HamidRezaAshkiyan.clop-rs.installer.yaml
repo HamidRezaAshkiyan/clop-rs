@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 
 PackageIdentifier: HamidRezaAshkiyan.clop-rs
-PackageVersion: 0.4.2
+PackageVersion: 0.4.3
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -12,7 +12,7 @@ NestedInstallerFiles:
     PortableCommandAlias: clop-cli
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/HamidRezaAshkiyan/clop-rs/releases/download/v0.4.2/clop-rs-v0.4.2-windows-x64.zip
-    InstallerSha256: 3D63085B2BDEC9585239860C35E088542C036CDB90F96D5C12D4911B867DABFE
+    InstallerUrl: https://github.com/HamidRezaAshkiyan/clop-rs/releases/download/v0.4.3/clop-rs-v0.4.3-windows-x64.zip
+    InstallerSha256: 3894815A5B0D2A22814ABE92BB6F5567126742F1A9ED820DCBB2530616C41286
 ManifestType: installer
 ManifestVersion: 1.6.0
