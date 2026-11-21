@@ -564,3 +564,54 @@ fn test_clop_cli_formats_and_optimize() {
     assert!(opt_json["total_saved_bytes"].as_u64().unwrap() > 0);
     assert!(output_path.exists());
 }
+
+#[test]
+fn test_mozjpeg_progressive_and_trellis_compression() {
+    use clop_rs::optimizer::encode_jpeg_mozjpeg;
+
+    let (w, h) = (320u32, 240u32);
+    let rgba = generate_synthetic_screenshot(w, h);
+    let rgb = image::DynamicImage::ImageRgba8(
+        image::RgbaImage::from_raw(w, h, rgba).expect("valid rgba"),
+    )
+    .into_rgb8();
+
+    // Baseline image crate JPEG encoder at Q85
+    let mut baseline_jpg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut baseline_jpg, 85)
+        .encode_image(&rgb)
+        .expect("baseline jpeg encode");
+
+    // MozJPEG progressive + trellis encoder at Q85
+    let moz_prog =
+        encode_jpeg_mozjpeg(w, h, rgb.as_raw(), 85, true).expect("mozjpeg progressive encode");
+    assert!(moz_prog.starts_with(&[0xFF, 0xD8]), "valid JPEG SOI");
+    // Progressive JPEG must contain an SOF2 (0xFF 0xC2) marker
+    assert!(
+        moz_prog.windows(2).any(|w| w == [0xFF, 0xC2]),
+        "MozJPEG progressive output should contain SOF2 progressive marker"
+    );
+    assert!(
+        moz_prog.len() < baseline_jpg.len(),
+        "MozJPEG progressive ({} B) should be smaller than baseline image::JpegEncoder ({} B)",
+        moz_prog.len(),
+        baseline_jpg.len()
+    );
+
+    // Decodes cleanly back to original dimensions
+    let decoded = image::load_from_memory_with_format(&moz_prog, image::ImageFormat::Jpeg)
+        .expect("decode mozjpeg output");
+    assert_eq!(decoded.width(), w);
+    assert_eq!(decoded.height(), h);
+
+    // MozJPEG baseline + trellis mode (used for PDF embedded streams)
+    let moz_base =
+        encode_jpeg_mozjpeg(w, h, rgb.as_raw(), 85, false).expect("mozjpeg baseline encode");
+    assert!(moz_base.starts_with(&[0xFF, 0xD8]));
+    assert!(
+        moz_base.len() < baseline_jpg.len(),
+        "MozJPEG baseline+trellis ({} B) should be smaller than image::JpegEncoder ({} B)",
+        moz_base.len(),
+        baseline_jpg.len()
+    );
+}

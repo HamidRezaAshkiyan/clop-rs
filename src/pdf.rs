@@ -1,5 +1,5 @@
 use crate::config::{AppConfig, OptimizationMode};
-use crate::optimizer::{strip_jpeg_exif, OptimizedImage};
+use crate::optimizer::{encode_jpeg_mozjpeg, strip_jpeg_exif, OptimizedImage};
 use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
@@ -340,11 +340,13 @@ fn optimize_object_body(body: &[u8], config: &AppConfig) -> (Vec<u8>, bool) {
                     RgbaImage::from_raw(w, h, rgba.into_raw()).unwrap(),
                 )
                 .into_rgb8();
-                let mut reencoded = Vec::new();
                 let q = config.effective_pdf_jpeg_quality();
-                let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut reencoded, q);
-                if enc.encode_image(&rgb).is_ok() && reencoded.len() < best_jpeg.len() {
-                    best_jpeg = reencoded;
+                // Use baseline mode with MozJPEG trellis quantization & Huffman optimization
+                // for universal PDF viewer compatibility alongside strong size reduction.
+                if let Ok(reencoded) = encode_jpeg_mozjpeg(w, h, rgb.as_raw(), q, false) {
+                    if reencoded.len() < best_jpeg.len() {
+                        best_jpeg = reencoded;
+                    }
                 }
             }
         }
