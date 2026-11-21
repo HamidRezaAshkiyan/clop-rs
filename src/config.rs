@@ -403,6 +403,20 @@ pub struct Cli {
 pub enum Commands {
     /// Open the graphical Dashboard, Settings, Clipboard History & File Optimizer window.
     Ui,
+    /// Launch the interactive OpenCode-style Terminal User Interface (TUI).
+    Tui {
+        /// Optional working directory for `@file` picking and `!shell` commands.
+        path: Option<PathBuf>,
+        /// Start with live clipboard watching enabled.
+        #[arg(long, short = 'w')]
+        watch: bool,
+        /// Start with Downloads folder watching enabled.
+        #[arg(long)]
+        downloads: bool,
+        /// Color theme (`dark`, `tokyo`, `catppuccin`, `gruvbox`).
+        #[arg(long, default_value = "dark")]
+        theme: String,
+    },
     /// View or clear optimization history (clipboard & files).
     History {
         /// Show only clipboard history entries.
