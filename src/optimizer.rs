@@ -220,17 +220,16 @@ pub fn optimize_file(
         let mut best_bytes = stripped_jpeg;
         if resized || config.mode == OptimizationMode::Smart {
             let quality = config.effective_jpeg_quality();
-            let mut reencoded = Vec::new();
             let rgb_img = image::DynamicImage::ImageRgba8(
                 RgbaImage::from_raw(work_w, work_h, work_rgba.clone()).unwrap(),
             )
             .into_rgb8();
-            let mut encoder =
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut reencoded, quality);
-            if encoder.encode_image(&rgb_img).is_ok()
-                && (resized || reencoded.len() < best_bytes.len())
+            if let Ok(reencoded) =
+                encode_jpeg_mozjpeg(work_w, work_h, rgb_img.as_raw(), quality, true)
             {
-                best_bytes = reencoded;
+                if resized || reencoded.len() < best_bytes.len() {
+                    best_bytes = reencoded;
+                }
             }
         }
 
@@ -414,6 +413,55 @@ pub fn strip_jpeg_exif(jpeg_bytes: &[u8]) -> Option<Vec<u8>> {
         Some(out)
     } else {
         None
+    }
+}
+
+/// Encodes an RGB pixel buffer to JPEG using Mozilla's `mozjpeg` encoder with
+/// trellis quantization, optimized Huffman tables, and optional progressive scan optimization.
+///
+/// Typically produces 10–20% smaller files than baseline JPEG encoders at identical visual quality.
+pub fn encode_jpeg_mozjpeg(
+    width: u32,
+    height: u32,
+    rgb_bytes: &[u8],
+    quality: u8,
+    progressive: bool,
+) -> Result<Vec<u8>> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(3))
+        .context("JPEG dimensions overflow")?;
+    if width == 0 || height == 0 || rgb_bytes.len() != expected {
+        bail!(
+            "Invalid RGB buffer for MozJPEG: {}x{}, expected {} bytes, got {}",
+            width,
+            height,
+            expected,
+            rgb_bytes.len()
+        );
+    }
+
+    let result = std::panic::catch_unwind(|| -> std::io::Result<Vec<u8>> {
+        let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
+        comp.set_size(width as usize, height as usize);
+        comp.set_quality(quality.clamp(1, 100) as f32);
+        comp.set_optimize_coding(true);
+        if progressive {
+            comp.set_progressive_mode();
+            comp.set_optimize_scans(true);
+        } else {
+            comp.set_optimize_scans(false);
+        }
+
+        let mut started = comp.start_compress(Vec::new())?;
+        started.write_scanlines(rgb_bytes)?;
+        started.finish()
+    });
+
+    match result {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(e)) => Err(anyhow::anyhow!("MozJPEG compression failed: {}", e)),
+        Err(_) => bail!("MozJPEG encoder panicked during compression"),
     }
 }
 
