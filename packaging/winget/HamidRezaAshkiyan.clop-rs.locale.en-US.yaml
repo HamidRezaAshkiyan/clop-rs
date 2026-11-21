@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 
 PackageIdentifier: HamidRezaAshkiyan.clop-rs
-PackageVersion: 0.4.5
+PackageVersion: 0.4.6
 PackageLocale: en-US
 Publisher: HamidReza Ashkiyan
 PublisherUrl: https://github.com/HamidRezaAshkiyan
@@ -27,6 +27,6 @@ Tags:
   - video
   - cli
   - rust
-ReleaseNotesUrl: https://github.com/HamidRezaAshkiyan/clop-rs/releases/tag/v0.4.5
+ReleaseNotesUrl: https://github.com/HamidRezaAshkiyan/clop-rs/releases/tag/v0.4.6
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0
