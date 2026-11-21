@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>clop-rs ⚡ — Fast Rust Clipboard, Image, PDF &amp; Video Optimizer</title>
+  <meta name="description" content="Minimal-footprint cross-platform (macOS & Windows) automatic clipboard, Downloads, image, PDF & video optimizer written in pure Rust — with MozJPEG, HiDPI Floating HUD, and OpenCode-style TUI." />
+  <link rel="icon" type="image/png" href="assets/logo.png" />
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --surface: #121826;
+      --surface-2: #182133;
+      --border: #27344d;
+      --border-hi: #3b4f73;
+      --fg: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --emerald: #10b981;
+      --emerald-soft: rgba(16, 185, 129, 0.14);
+      --amber: #f59e0b;
+      --radius: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background:
+        radial-gradient(900px 420px at 50% -80px, rgba(56, 189, 248, 0.14), transparent 70%),
+        radial-gradient(600px 360px at 85% 20%, rgba(16, 185, 129, 0.09), transparent 70%),
+        var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+    /* Nav */
+    nav {
+      position: sticky; top: 0; z-index: 40;
+      backdrop-filter: blur(14px);
+      background: rgba(11, 15, 23, 0.78);
+      border-bottom: 1px solid rgba(39, 52, 77, 0.65);
+    }
+    .nav-inner {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 64px;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 700; font-size: 1.1rem; color: var(--fg);
+    }
+    .brand:hover { text-decoration: none; }
+    .brand img { width: 30px; height: 30px; border-radius: 7px; }
+    .nav-links { display: flex; align-items: center; gap: 22px; font-size: 0.92rem; }
+    .nav-links a { color: var(--muted); transition: color 0.15s; }
+    .nav-links a:hover { color: var(--fg); text-decoration: none; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 18px; border-radius: 10px; font-weight: 600; font-size: 0.92rem;
+      border: 1px solid transparent; cursor: pointer; transition: all 0.16s ease;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #04130d; box-shadow: 0 8px 24px rgba(16, 185, 129, 0.25);
+    }
+    .btn-primary:hover { transform: translateY(-1px); filter: brightness(1.06); text-decoration: none; }
+    .btn-secondary {
+      background: var(--surface-2); color: var(--fg); border-color: var(--border);
+    }
+    .btn-secondary:hover { border-color: var(--border-hi); background: #1e2940; text-decoration: none; }
+    .btn-sm { padding: 7px 13px; font-size: 0.85rem; }
+
+    /* Hero */
+    .hero { padding: 72px 0 56px; text-align: center; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 5px 14px; border-radius: 999px;
+      background: var(--emerald-soft); border: 1px solid rgba(16, 185, 129, 0.35);
+      color: #6ee7b7; font-size: 0.82rem; font-weight: 600; margin-bottom: 20px;
+    }
+    h1 {
+      font-size: clamp(2.2rem, 5vw, 3.6rem);
+      line-height: 1.1; letter-spacing: -0.03em; margin-bottom: 18px;
+    }
+    .gradient-text {
+      background: linear-gradient(120deg, #f8fafc 20%, #38bdf8 60%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .hero p.lead {
+      max-width: 680px; margin: 0 auto 28px;
+      color: var(--muted); font-size: 1.1rem;
+    }
+    .hero-actions { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-bottom: 44px; }
+
+    /* Interactive HUD Toast Showcase */
+    .hud-demo-wrap {
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+    }
+    .hud-toast {
+      width: min(410px, 100%);
+      background: linear-gradient(180deg, rgba(20, 27, 40, 0.96), rgba(13, 18, 28, 0.98));
+      border: 1px solid #334563;
+      border-radius: 16px;
+      padding: 14px 16px 14px 20px;
+      position: relative;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      text-align: left;
+      overflow: hidden;
+    }
+    .hud-toast::before {
+      content: ""; position: absolute; left: 6px; top: 14px; bottom: 14px; width: 3.5px;
+      border-radius: 99px; background: var(--emerald);
+      transition: background 0.2s;
+    }
+    .hud-toast.reverted::before { background: var(--amber); }
+    .hud-grid { display: flex; gap: 14px; align-items: center; }
+    .hud-thumb {
+      width: 64px; height: 64px; border-radius: 9px; flex-shrink: 0;
+      background: linear-gradient(135deg, #1e293b, #0f172a);
+      border: 1px solid #3b4f73; display: grid; place-items: center;
+      overflow: hidden;
+    }
+    .hud-thumb img { width: 44px; height: 44px; }
+    .hud-body { flex: 1; min-width: 0; }
+    .hud-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+    .hud-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .hud-src { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); letter-spacing: 0.04em; }
+    .badge-pct {
+      font-family: var(--mono); font-size: 0.7rem; font-weight: 700;
+      padding: 2px 7px; border-radius: 99px;
+      background: #064e3b; border: 1px solid #10b981; color: #a7f3d0;
+    }
+    .badge-exif {
+      font-family: var(--mono); font-size: 0.68rem; font-weight: 700;
+      padding: 2px 6px; border-radius: 99px;
+      background: #1e3a8a; border: 1px solid #60a5fa; color: #bfdbfe;
+    }
+    .hud-revert {
+      font-family: var(--mono); font-size: 0.7rem; font-weight: 700;
+      padding: 3px 9px; border-radius: 6px;
+      background: #1e293b; border: 1px solid #475569; color: #f8fafc;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .hud-revert:hover { background: #2563eb; border-color: #60a5fa; }
+    .hud-sizes { font-family: var(--mono); font-size: 1.05rem; font-weight: 700; color: #f8fafc; margin-bottom: 6px; }
+    .hud-bar-track {
+      height: 8px; border-radius: 99px; background: rgba(6, 78, 59, 0.7);
+      border: 1px solid rgba(52, 211, 153, 0.55); overflow: hidden; margin-bottom: 6px;
+    }
+    .hud-bar-fill {
+      height: 100%; width: 23%; border-radius: 99px;
+      background: linear-gradient(90deg, #10b981, #34d399);
+      transition: width 0.35s ease;
+    }
+    .hud-toast.reverted .hud-bar-fill { width: 100%; background: var(--amber); }
+    .hud-meta { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); display: flex; justify-content: space-between; }
+
+    /* Stats strip */
+    .stats-strip {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px; margin: 48px 0 64px;
+    }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 18px 20px; text-align: center;
+    }
+    .stat-val { font-size: 1.6rem; font-weight: 800; color: var(--fg); letter-spacing: -0.02em; }
+    .stat-val span { color: var(--emerald); }
+    .stat-label { font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
+
+    /* Sections */
+    section { padding: 48px 0; }
+    h2 { font-size: 1.85rem; letter-spacing: -0.02em; margin-bottom: 10px; }
+    .section-sub { color: var(--muted); margin-bottom: 28px; max-width: 680px; }
+
+    /* Install Box */
+    .install-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden;
+    }
+    .tabs {
+      display: flex; gap: 4px; padding: 10px 12px 0;
+      border-bottom: 1px solid var(--border); overflow-x: auto;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .tab-btn {
+      background: transparent; border: none; color: var(--muted);
+      font-family: var(--sans); font-size: 0.88rem; font-weight: 600;
+      padding: 9px 14px; border-bottom: 2px solid transparent; cursor: pointer;
+      white-space: nowrap; transition: color 0.15s;
+    }
+    .tab-btn:hover { color: var(--fg); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-panel { display: none; padding: 20px; position: relative; }
+    .tab-panel.active { display: block; }
+    pre {
+      font-family: var(--mono); font-size: 0.88rem; line-height: 1.65;
+      color: #e2e8f0; overflow-x: auto; padding-right: 72px;
+    }
+    .copy-btn {
+      position: absolute; top: 16px; right: 16px;
+      background: var(--surface-2); border: 1px solid var(--border);
+      color: var(--muted); font-family: var(--mono); font-size: 0.78rem;
+      padding: 6px 11px; border-radius: 8px; cursor: pointer;
+    }
+    .copy-btn:hover { color: var(--fg); border-color: var(--border-hi); }
+
+    /* TUI Mockup */
+    .tui-window {
+      background: #0f1219; border: 1px solid #2e384a; border-radius: var(--radius);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45); overflow: hidden;
+      font-family: var(--mono); font-size: 0.82rem;
+    }
+    .tui-titlebar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: #161b26; border-bottom: 1px solid #2e384a;
+      color: var(--muted); font-size: 0.78rem;
+    }
+    .dots { display: flex; gap: 7px; }
+    .dot { width: 11px; height: 11px; border-radius: 50%; }
+    .dot.r { background: #ef4444; } .dot.y { background: #f59e0b; } .dot.g { background: #10b981; }
+    .tui-body { display: grid; grid-template-columns: 2.1fr 1fr; gap: 10px; padding: 12px; }
+    @media (max-width: 780px) { .tui-body { grid-template-columns: 1fr; } }
+    .tui-pane {
+      border: 1px solid #2e384a; border-radius: 8px; padding: 12px; background: #121622;
+    }
+    .tui-pane-title { color: var(--accent); font-weight: 700; margin-bottom: 10px; }
+    .tui-entry { margin-bottom: 12px; }
+    .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-weight: 700; font-size: 0.74rem; }
+    .tag-cb { background: var(--accent); color: #0b0f17; }
+    .tag-file { background: var(--emerald); color: #04130d; }
+    .tag-sh { background: var(--amber); color: #1a1204; }
+    .tui-composer {
+      margin: 0 12px 12px; padding: 10px 12px; border: 1px solid var(--accent);
+      border-radius: 8px; background: #161b26; display: flex; align-items: center; gap: 10px;
+    }
+
+    /* Feature Grid */
+    .features-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px;
+    }
+    .feat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 22px; transition: border-color 0.16s, transform 0.16s;
+    }
+    .feat-card:hover { border-color: var(--border-hi); transform: translateY(-2px); }
+    .feat-icon {
+      width: 38px; height: 38px; border-radius: 10px;
+      background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.28);
+      display: grid; place-items: center; font-size: 1.15rem; margin-bottom: 14px;
+    }
+    .feat-card h3 { font-size: 1.05rem; margin-bottom: 8px; }
+    .feat-card p { color: var(--muted); font-size: 0.92rem; }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border); margin-top: 48px;
+      padding: 32px 0; color: var(--muted); font-size: 0.88rem;
+    }
+    .footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="container nav-inner">
+      <a class="brand" href="#">
+        <img src="assets/logo.png" alt="clop-rs logo" />
+        <span>clop-rs ⚡</span>
+      </a>
+      <div class="nav-links">
+        <a href="#install">Install</a>
+        <a href="#tui">TUI</a>
+        <a href="#features">Features</a>
+        <a href="https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest" target="_blank" rel="noopener">Releases</a>
+        <a class="btn btn-secondary btn-sm" href="https://github.com/HamidRezaAshkiyan/clop-rs" target="_blank" rel="noopener">GitHub ★</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="hero">
+      <div class="pill">⚡ Pure Rust · macOS &amp; Windows · v0.4.5</div>
+      <h1><span class="gradient-text">Instant, Zero-Friction</span><br />Clipboard &amp; Media Optimizer</h1>
+      <p class="lead">
+        Copy a screenshot or download a photo, PDF, or video — <code>clop-rs</code> silently compresses it
+        <strong>60–85% smaller</strong> in milliseconds with <strong>0% idle CPU</strong>, MozJPEG trellis quantization,
+        a 2× HiDPI Floating HUD, and an OpenCode-style interactive TUI.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest" target="_blank" rel="noopener">Download Latest Release</a>
+        <a class="btn btn-secondary" href="#install">Quick Install</a>
+        <a class="btn btn-secondary" href="https://github.com/HamidRezaAshkiyan/clop-rs" target="_blank" rel="noopener">View Source</a>
+      </div>
+
+      <div class="hud-demo-wrap">
+        <div class="hud-toast" id="hudToast">
+          <div class="hud-grid">
+            <div class="hud-thumb"><img src="assets/logo.png" alt="Thumbnail" /></div>
+            <div class="hud-body">
+              <div class="hud-top">
+                <div class="hud-badges">
+                  <span class="hud-src" id="hudSrc">CLIPBOARD</span>
+                  <span class="badge-pct" id="hudPct">-76.7%</span>
+                  <span class="badge-exif" id="hudExif">EXIF</span>
+                </div>
+                <button class="hud-revert" id="hudRevertBtn" type="button">REVERT</button>
+              </div>
+              <div class="hud-sizes" id="hudSizes">445.7 KB → 103.7 KB</div>
+              <div class="hud-bar-track"><div class="hud-bar-fill"></div></div>
+              <div class="hud-meta">
+                <span id="hudFooter">SAVED 342.0 KB (42MS)</span>
+                <span>HOVER TO PAUSE</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <span style="font-size: 0.8rem; color: var(--muted);">Interactive preview of the 2× HiDPI Floating HUD Toast — click <code>REVERT</code> to test</span>
+      </div>
+
+      <div class="stats-strip">
+        <div class="stat-card"><div class="stat-val"><span>60–85%</span></div><div class="stat-label">Typical PNG / Screenshot Savings</div></div>
+        <div class="stat-card"><div class="stat-val"><span>0%</span></div><div class="stat-label">Idle CPU (O(1) OS Counter)</div></div>
+        <div class="stat-card"><div class="stat-val">Moz<span>JPEG</span></div><div class="stat-label">Progressive + Trellis Encoding</div></div>
+        <div class="stat-card"><div class="stat-val"><span>3</span> Modes</div><div class="stat-label">Tray + HUD · Web Dashboard · TUI</div></div>
+      </div>
+    </section>
+
+    <section id="install">
+      <h2>Install in Seconds</h2>
+      <p class="section-sub">Install on macOS or Windows via Homebrew, WinGet, one-line scripts, or Cargo.</p>
+      <div class="install-card">
+        <div class="tabs" role="tablist">
+          <button class="tab-btn active" data-tab="brew" type="button">Homebrew (macOS)</button>
+          <button class="tab-btn" data-tab="winget" type="button">WinGet (Windows)</button>
+          <button class="tab-btn" data-tab="curl" type="button">Shell / PowerShell</button>
+          <button class="tab-btn" data-tab="cargo" type="button">Build from Source</button>
+        </div>
+
+        <div class="tab-panel active" id="tab-brew">
+          <button class="copy-btn" data-copy="brew tap HamidRezaAshkiyan/clop-rs https://github.com/HamidRezaAshkiyan/clop-rs&#10;brew install --cask HamidRezaAshkiyan/clop-rs/clop-rs" type="button">Copy</button>
+<pre>brew tap HamidRezaAshkiyan/clop-rs https://github.com/HamidRezaAshkiyan/clop-rs
+
+# Full macOS App + CLI binaries (recommended)
+brew install --cask HamidRezaAshkiyan/clop-rs/clop-rs
+
+# Or CLI binaries only (clop-rs &amp; clop-cli)
+brew install HamidRezaAshkiyan/clop-rs/clop-rs</pre>
+        </div>
+
+        <div class="tab-panel" id="tab-winget">
+          <button class="copy-btn" data-copy="winget install HamidRezaAshkiyan.clop-rs" type="button">Copy</button>
+<pre>winget install HamidRezaAshkiyan.clop-rs</pre>
+        </div>
+
+        <div class="tab-panel" id="tab-curl">
+          <button class="copy-btn" data-copy="curl -fsSL https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/install.sh | bash" type="button">Copy</button>
+<pre># macOS
+curl -fsSL https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/install.sh | bash
+
+# Windows (PowerShell)
+irm https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/install.ps1 | iex</pre>
+        </div>
+
+        <div class="tab-panel" id="tab-cargo">
+          <button class="copy-btn" data-copy="git clone https://github.com/HamidRezaAshkiyan/clop-rs.git &amp;&amp; cd clop-rs &amp;&amp; cargo build --release" type="button">Copy</button>
+<pre>git clone https://github.com/HamidRezaAshkiyan/clop-rs.git
+cd clop-rs
+cargo build --release</pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="tui">
+      <h2>OpenCode-Style Interactive TUI</h2>
+      <p class="section-sub">
+        Prefer staying in the terminal? Launch <code>clop-cli tui</code> (or <code>clop-rs tui</code>) for a keyboard-driven
+        workflow with <code>/</code> slash commands, <code>@</code> fuzzy file picking, <code>!</code> shell execution,
+        <code>Ctrl+X</code> leader shortcuts, and 4 built-in themes.
+      </p>
+      <div class="tui-window">
+        <div class="tui-titlebar">
+          <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+          <div>clop-cli tui --watch --theme opencode-dark</div>
+          <div>CB:ON · DL:ON</div>
+        </div>
+        <div class="tui-body">
+          <div class="tui-pane">
+            <div class="tui-pane-title">Activity Feed</div>
+            <div class="tui-entry">
+              <div><span class="tag tag-cb">CLIPBOARD</span> <strong>Screenshot</strong> <span style="color:#34d399;font-weight:700;">-78.4%</span> <span style="color:#38bdf8;">[EXIF]</span></div>
+              <div style="color:#94a3b8;">│ 1.42 MB → 314.2 KB &nbsp;<span style="color:#34d399;">████░░░░░░░░░░░░</span> &nbsp;saved 1.11 MB in 38ms</div>
+            </div>
+            <div class="tui-entry">
+              <div><span class="tag tag-file">FILE</span> <strong>hero-banner.jpg</strong> <span style="color:#34d399;font-weight:700;">-41.2%</span> <span style="color:#38bdf8;">[EXIF]</span></div>
+              <div style="color:#94a3b8;">│ 2.18 MB → 1.28 MB &nbsp;<span style="color:#34d399;">█████████░░░░░░░</span> &nbsp;saved 921.6 KB in 64ms</div>
+            </div>
+            <div class="tui-entry">
+              <div><span class="tag tag-sh">!</span> <strong>ls -lh screenshots/</strong></div>
+              <div style="color:#94a3b8;">│ -rw-r--r-- 314K hero-banner.jpg · 103K demo.png</div>
+            </div>
+          </div>
+          <div class="tui-pane">
+            <div class="tui-pane-title" style="color:#34d399;">Savings &amp; Engine</div>
+            <div style="margin-bottom:8px;">Session: <strong>2 items · 2.01 MB</strong></div>
+            <div style="margin-bottom:10px;color:#94a3b8;">Preset: <span style="color:#f1f5f9;">Balanced (Q95)</span><br />Codecs: <span style="color:#34d399;">✓</span> MozJPEG <span style="color:#34d399;">✓</span> Oxipng<br />Tools: <span style="color:#34d399;">✓</span> FFmpeg <span style="color:#34d399;">✓</span> GS</div>
+            <div style="color:#f59e0b;">Ctrl+X c <span style="color:#94a3b8;">clipboard</span></div>
+            <div style="color:#f59e0b;">Ctrl+X w <span style="color:#94a3b8;">toggle watch</span></div>
+            <div style="color:#f59e0b;">Ctrl+X p <span style="color:#94a3b8;">cycle preset</span></div>
+            <div style="color:#f59e0b;">Ctrl+X u <span style="color:#94a3b8;">undo last</span></div>
+            <div style="color:#f59e0b;">Ctrl+X t <span style="color:#94a3b8;">cycle theme</span></div>
+          </div>
+        </div>
+        <div class="tui-composer">
+          <span class="tag tag-cb">CMD</span>
+          <span>/optimize @hero-banner.jpg<span style="color:#38bdf8;">█</span></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="features">
+      <h2>Everything Built In</h2>
+      <p class="section-sub">Designed to stay out of your way until you need it — fast, private, and 100% local.</p>
+      <div class="features-grid">
+        <div class="feat-card">
+          <div class="feat-icon">🖼️</div>
+          <h3>MozJPEG + imagequant + oxipng</h3>
+          <p>Progressive + trellis-quantized JPEGs, perceptual 8-bit PNG palette quantization, or strict bit-exact lossless compression with a size guard that never bloats files.</p>
+        </div>
+        <div class="feat-card">
+          <div class="feat-icon">✨</div>
+          <h3>2× HiDPI Floating HUD Toast</h3>
+          <p>Glassmorphic rounded toast with live shimmer progress, thumbnail preview, savings &amp; EXIF pills, hover-to-pause countdown, and one-click <strong>[REVERT]</strong>.</p>
+        </div>
+        <div class="feat-card">
+          <div class="feat-icon">📄</div>
+          <h3>Pure-Rust PDF &amp; FFmpeg Video</h3>
+          <p>Compresses PDF streams &amp; embedded JPEGs natively in Rust (plus optional Ghostscript) and shrinks screen recordings with hardware-accelerated H.264 via FFmpeg.</p>
+        </div>
+        <div class="feat-card">
+          <div class="feat-icon">📥</div>
+          <h3>Auto-Optimize Downloads</h3>
+          <p>Automatically watches <code>~/Downloads</code> (or any custom folder) for new images, PDFs, and videos with instant one-click rollback.</p>
+        </div>
+        <div class="feat-card">
+          <div class="feat-icon">🔒</div>
+          <h3>EXIF &amp; GPS Privacy Stripping</h3>
+          <p>Strips camera EXIF, GPS coordinates, XMP/IPTC, and PNG text/time metadata chunks before you paste or share files anywhere.</p>
+        </div>
+        <div class="feat-card">
+          <div class="feat-icon">🖱️</div>
+          <h3>Finder &amp; Explorer Context Menu</h3>
+          <p>Right-click any image, PDF, or video and select <em>Optimize with clop-rs</em> — plus a full Web Dashboard (<code>clop-rs ui</code>) and scriptable JSON CLI (<code>clop-cli</code>).</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-inner">
+      <div><strong>clop-rs ⚡</strong> — MIT Licensed · Written in Rust by <a href="https://github.com/HamidRezaAshkiyan" target="_blank" rel="noopener">HamidReza Ashkiyan</a></div>
+      <div style="display:flex;gap:18px;">
+        <a href="https://github.com/HamidRezaAshkiyan/clop-rs" target="_blank" rel="noopener">Repository</a>
+        <a href="https://github.com/HamidRezaAshkiyan/clop-rs/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/HamidRezaAshkiyan/clop-rs/issues" target="_blank" rel="noopener">Issues</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Install tabs
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    // Copy buttons
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.copy);
+          const orig = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => (btn.textContent = orig), 1500);
+        } catch (_) {}
+      });
+    });
+
+    // Interactive HUD Toast Revert toggle
+    const toast = document.getElementById('hudToast');
+    const revertBtn = document.getElementById('hudRevertBtn');
+    const hudSrc = document.getElementById('hudSrc');
+    const hudPct = document.getElementById('hudPct');
+    const hudExif = document.getElementById('hudExif');
+    const hudSizes = document.getElementById('hudSizes');
+    const hudFooter = document.getElementById('hudFooter');
+    let reverted = false;
+
+    revertBtn.addEventListener('click', () => {
+      reverted = !reverted;
+      toast.classList.toggle('reverted', reverted);
+      if (reverted) {
+        hudSrc.textContent = 'REVERTED CLIPBOARD';
+        hudPct.style.display = 'none';
+        hudExif.style.display = 'none';
+        hudSizes.textContent = 'RESTORED 445.7 KB';
+        hudFooter.textContent = 'ORIGINAL IMAGE RESTORED';
+        revertBtn.textContent = 'OPTIMIZE';
+      } else {
+        hudSrc.textContent = 'CLIPBOARD';
+        hudPct.style.display = '';
+        hudExif.style.display = '';
+        hudSizes.textContent = '445.7 KB → 103.7 KB';
+        hudFooter.textContent = 'SAVED 342.0 KB (42MS)';
+        revertBtn.textContent = 'REVERT';
+      }
+    });
+  </script>
+</body>
+</html>
