@@ -1076,7 +1076,7 @@ impl TuiApp {
 
         let mut spans = vec![
             Span::styled(
-                " clop-rs ⚡ ",
+                format!(" clop-rs ⚡ v{} ", env!("CARGO_PKG_VERSION")),
                 Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
             ),
             Span::styled("│ ", Style::default().fg(p.border)),

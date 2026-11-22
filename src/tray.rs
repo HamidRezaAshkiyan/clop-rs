@@ -74,6 +74,7 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
         platform::is_autostart_enabled(),
         None,
     );
+    let version_item = MenuItem::new(format!("clop-rs v{}", env!("CARGO_PKG_VERSION")), false, None);
     let quit_item = MenuItem::new("Quit clop-rs", true, None);
 
     menu.append(&open_dashboard_item)?;
@@ -92,12 +93,13 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
     menu.append(&show_hud_item)?;
     menu.append(&autostart_item)?;
     menu.append(&PredefinedMenuItem::separator())?;
+    menu.append(&version_item)?;
     menu.append(&quit_item)?;
 
     let icon = build_tray_icon()?;
     let _tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("clop-rs — Image, Video & PDF Optimizer")
+        .with_tooltip(format!("clop-rs v{} — Image, Video & PDF Optimizer", env!("CARGO_PKG_VERSION")))
         .with_icon(icon)
         .build()
         .context("Failed to create system tray / menu bar icon")?;

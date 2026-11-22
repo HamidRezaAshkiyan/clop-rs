@@ -82,6 +82,7 @@ pub enum UiCommand {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemUiState {
+    pub version: String,
     pub autostart: bool,
     pub context_menu: bool,
     pub paused: bool,
@@ -217,6 +218,7 @@ impl DashboardWindow {
             "stats": history.stats(),
             "formats": supported_formats_info(),
             "system": SystemUiState {
+                version: env!("CARGO_PKG_VERSION").to_string(),
                 autostart: platform::is_autostart_enabled(),
                 context_menu: context_menu::is_context_menu_enabled(),
                 paused,

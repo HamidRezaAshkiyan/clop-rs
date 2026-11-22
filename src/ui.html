@@ -79,6 +79,20 @@
     font-size: 15px;
     font-weight: 700;
     letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .version-badge {
+    font-size: 10.5px;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: var(--accent);
+    background: var(--accent-bg);
+    border: 1px solid var(--accent-border);
+    padding: 1px 6px;
+    border-radius: 99px;
+    line-height: 1.3;
   }
   .brand-sub {
     font-size: 11px;
@@ -742,7 +756,7 @@
     <div class="brand">
       <div class="brand-icon">⚡</div>
       <div>
-        <div class="brand-title">clop-rs</div>
+        <div class="brand-title">clop-rs <span class="version-badge" id="app-version"></span></div>
         <div class="brand-sub">Image, PDF &amp; Video Optimizer</div>
       </div>
     </div>
@@ -1455,6 +1469,10 @@
         state.stats = msg.stats || null;
         state.formats = msg.formats || null;
         state.system = msg.system || {};
+        if (state.system.version) {
+          const verEl = document.getElementById("app-version");
+          if (verEl) verEl.textContent = "v" + state.system.version;
+        }
         renderFormats();
         renderConfig();
         renderHistory();
