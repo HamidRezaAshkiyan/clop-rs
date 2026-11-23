@@ -4,7 +4,7 @@ use crate::downloads::is_supported_media_path;
 use crate::history::{HistorySource, OptimizationHistory};
 use crate::hud::RevertSource;
 use crate::optimizer::{
-    self, generate_thumbnail, supported_formats_info, SupportedFormatsInfo,
+    self, generate_thumbnail, supported_formats_info, DiskBackup, SupportedFormatsInfo,
     SUPPORTED_DOCUMENT_EXTENSIONS, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_VIDEO_EXTENSIONS,
 };
 use crate::{pdf, platform, video};
@@ -82,7 +82,7 @@ pub enum AppEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct FileProgressUpdate {
     pub path: String,
     pub status: String,
@@ -95,7 +95,7 @@ pub struct FileProgressUpdate {
     pub can_revert: bool,
     pub error: Option<String>,
     #[serde(skip)]
-    pub backup_bytes: Option<Vec<u8>>,
+    pub backup: Option<DiskBackup>,
     #[serde(skip)]
     pub summary: Option<OptimizationSummary>,
 }
@@ -148,8 +148,8 @@ pub struct DashboardWindow {
     proxy: EventLoopProxy<AppEvent>,
     /// Cached supported format & external tool availability (avoids scanning PATH on every UI click).
     formats_cache: SupportedFormatsInfo,
-    /// Per-file backups of original bytes so the user can revert files optimized in the UI.
-    pub file_backups: HashMap<String, Vec<u8>>,
+    /// Per-file disk-backed backups so the user can revert files optimized in the UI without RAM spikes.
+    pub file_backups: HashMap<String, DiskBackup>,
 }
 
 impl DashboardWindow {
@@ -370,7 +370,7 @@ impl DashboardWindow {
         thread::spawn(move || {
             for path_str in paths {
                 let path = PathBuf::from(&path_str);
-                let orig_bytes = fs::read(&path).ok();
+                let backup = DiskBackup::create(&path).ok();
 
                 match optimizer::optimize_file(&path, None, &config) {
                     Ok(res) => {
@@ -391,7 +391,7 @@ impl DashboardWindow {
                         };
 
                         let status = if res.was_modified { "done" } else { "optimal" };
-                        let can_revert = res.was_modified && orig_bytes.is_some();
+                        let can_revert = res.was_modified && backup.is_some();
 
                         let summary = if res.was_modified {
                             Some(OptimizationSummary {
@@ -422,7 +422,7 @@ impl DashboardWindow {
                                 elapsed_ms: res.elapsed.as_millis() as u64,
                                 can_revert,
                                 error: None,
-                                backup_bytes: if can_revert { orig_bytes } else { None },
+                                backup: if can_revert { backup } else { None },
                                 summary,
                             },
                         )));
@@ -440,7 +440,7 @@ impl DashboardWindow {
                                 elapsed_ms: 0,
                                 can_revert: false,
                                 error: Some(err.to_string()),
-                                backup_bytes: None,
+                                backup: None,
                                 summary: None,
                             },
                         )));

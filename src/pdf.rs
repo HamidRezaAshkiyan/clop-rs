@@ -1,5 +1,7 @@
 use crate::config::{AppConfig, OptimizationMode};
-use crate::optimizer::{encode_jpeg_mozjpeg, strip_jpeg_exif, OptimizedImage};
+use crate::optimizer::{
+    atomic_write_file, encode_jpeg_mozjpeg, strip_jpeg_exif, unique_temp_path, OptimizedImage,
+};
 use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
@@ -39,6 +41,25 @@ pub fn optimize_pdf_file(
         bail!("Not a valid PDF file: {}", input_path.display());
     }
 
+    // Never rewrite encrypted or digitally signed PDFs (would break encryption or invalidate signatures)
+    if is_encrypted_or_signed_pdf(&raw_bytes) {
+        if let Some(out) = output_path {
+            atomic_write_file(out, &raw_bytes)
+                .with_context(|| format!("Failed to write PDF copy to {}", out.display()))?;
+        }
+        return Ok(OptimizedImage {
+            png_bytes: Vec::new(),
+            rgba_bytes: procedural_pdf_icon_64(),
+            width: 0,
+            height: 0,
+            original_size,
+            optimized_size: original_size,
+            was_modified: false,
+            exif_stripped: false,
+            elapsed: start.elapsed(),
+        });
+    }
+
     let mut best_bytes = raw_bytes.clone();
     let mut metadata_stripped = false;
 
@@ -64,7 +85,7 @@ pub fn optimize_pdf_file(
     let was_modified = best_bytes.len() < original_size;
 
     if was_modified || output_path.is_some() {
-        fs::write(target, &best_bytes)
+        atomic_write_file(target, &best_bytes)
             .with_context(|| format!("Failed to write optimized PDF to {}", target.display()))?;
     }
 
@@ -87,6 +108,22 @@ pub fn optimize_pdf_file(
     })
 }
 
+/// Returns `true` if the PDF appears to be encrypted or digitally signed.
+pub fn is_encrypted_or_signed_pdf(pdf_bytes: &[u8]) -> bool {
+    contains_subslice(pdf_bytes, b"/Encrypt")
+        || contains_subslice(pdf_bytes, b"/ByteRange")
+        || contains_subslice(pdf_bytes, b"/Type /Sig")
+        || contains_subslice(pdf_bytes, b"/Type/Sig")
+}
+
+/// Returns `true` if the PDF uses PDF 1.5+ compressed object streams or cross-reference streams
+/// which cannot be safely rebuilt with a classic plain-text `xref` table.
+pub fn has_compressed_pdf_structures(pdf_bytes: &[u8]) -> bool {
+    contains_subslice(pdf_bytes, b"/ObjStm")
+        || contains_subslice(pdf_bytes, b"/Type /XRef")
+        || contains_subslice(pdf_bytes, b"/Type/XRef")
+}
+
 /// Pure-Rust PDF stream optimizer:
 /// - Locates indirect objects (`<id> <gen> obj ... endobj`)
 /// - Re-compresses `/FlateDecode` streams at maximum zlib level (level 9)
@@ -94,7 +131,10 @@ pub fn optimize_pdf_file(
 /// - Strips XMP `/Metadata` stream padding when `config.strip_metadata` is enabled
 /// - Rebuilds the PDF `xref` table with exact updated byte offsets
 pub fn optimize_pdf_bytes_native(pdf_bytes: &[u8], config: &AppConfig) -> Option<(Vec<u8>, bool)> {
-    if !pdf_bytes.starts_with(b"%PDF-") {
+    if !pdf_bytes.starts_with(b"%PDF-")
+        || is_encrypted_or_signed_pdf(pdf_bytes)
+        || has_compressed_pdf_structures(pdf_bytes)
+    {
         return None;
     }
 
@@ -469,7 +509,7 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 
 fn try_ghostscript_pdf(input_path: &Path, config: &AppConfig) -> Option<Vec<u8>> {
     let gs_bin = find_ghostscript()?;
-    let tmp_out = env::temp_dir().join(format!("clop_rs_pdf_{}.pdf", std::process::id()));
+    let tmp_out = unique_temp_path(&env::temp_dir(), "clop_rs_pdf", "pdf");
     let _ = fs::remove_file(&tmp_out);
 
     let setting = config.effective_gs_pdf_setting();

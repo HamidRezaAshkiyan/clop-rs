@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::optimizer::{generate_thumbnail, OptimizedImage};
+use crate::optimizer::{atomic_move_file, generate_thumbnail, unique_temp_path, OptimizedImage};
 use anyhow::{bail, Context, Result};
 use std::env;
 use std::fs;
@@ -148,16 +148,18 @@ pub fn optimize_video_file(
         .unwrap_or("mp4")
         .to_ascii_lowercase();
 
-    // Create a temporary output file in the same directory (or system temp dir) with `.mp4` or matching container
+    // Create a collision-free temporary output file in the target's parent directory (or system temp dir)
     let container_ext = match ext.as_str() {
         "webm" => "webm",
         "mkv" => "mkv",
         _ => "mp4",
     };
-    let tmp_path = env::temp_dir().join(format!(
-        "clop_rs_video_{}.{container_ext}",
-        std::process::id()
-    ));
+    let tmp_dir = target_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty() && p.exists())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(env::temp_dir);
+    let tmp_path = unique_temp_path(&tmp_dir, "clop_rs_video", container_ext);
     let _ = fs::remove_file(&tmp_path);
 
     let crf = config.effective_video_crf();
@@ -198,31 +200,32 @@ pub fn optimize_video_file(
         );
     }
 
-    let candidate_bytes = fs::read(&tmp_path).context("Failed to read optimized temp video")?;
-    let _ = fs::remove_file(&tmp_path);
+    let candidate_size = fs::metadata(&tmp_path)
+        .context("Failed to stat optimized temp video")?
+        .len() as usize;
 
     let thumb_64 = extract_video_thumbnail_64(input_path);
 
-    if candidate_bytes.len() < original_size || output_path.is_some() {
-        fs::write(target_path, &candidate_bytes).with_context(|| {
+    if candidate_size < original_size || output_path.is_some() {
+        atomic_move_file(&tmp_path, target_path).with_context(|| {
             format!(
                 "Failed to write optimized video to {}",
                 target_path.display()
             )
         })?;
-        let optimized_size = candidate_bytes.len();
         Ok(OptimizedImage {
             png_bytes: Vec::new(),
             rgba_bytes: thumb_64,
             width: 0,
             height: 0,
             original_size,
-            optimized_size,
-            was_modified: optimized_size < original_size,
+            optimized_size: candidate_size,
+            was_modified: candidate_size < original_size,
             exif_stripped: config.strip_metadata,
             elapsed: start.elapsed(),
         })
     } else {
+        let _ = fs::remove_file(&tmp_path);
         Ok(OptimizedImage {
             png_bytes: Vec::new(),
             rgba_bytes: thumb_64,

@@ -1,11 +1,151 @@
 use crate::config::{AppConfig, OptimizationMode};
 use anyhow::{bail, Context, Result};
 use image::{imageops::FilterType, ImageFormat, RgbaImage};
-use oxipng::{Deflaters, InFile, Options, OutFile, StripChunks};
+use oxipng::{Deflaters, Options, StripChunks};
+use std::env;
 use std::fs;
-use std::io::Cursor;
-use std::path::Path;
+use std::io::{Cursor, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generates a collision-free temporary file path inside `dir`.
+pub fn unique_temp_path(dir: &Path, prefix: &str, ext: &str) -> PathBuf {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let suffix = if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{}", ext.trim_start_matches('.'))
+    };
+    dir.join(format!(".{prefix}_{pid}_{seq}{suffix}"))
+}
+
+/// Atomically writes `data` to `target` by writing to a sibling temporary file and renaming it into place.
+/// Preserves existing file permissions when overwriting an existing file.
+pub fn atomic_write_file(target: &Path, data: &[u8]) -> Result<()> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.as_os_str().is_empty() {
+        fs::create_dir_all(parent)?;
+    }
+    let existing_perms = fs::metadata(target).ok().map(|m| m.permissions());
+    let tmp_path = unique_temp_path(parent, "clop_tmp", "part");
+
+    let write_res = (|| -> Result<()> {
+        let mut file = fs::File::create(&tmp_path).with_context(|| {
+            format!("Failed to create temporary file at {}", tmp_path.display())
+        })?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        if let Some(perms) = existing_perms {
+            let _ = fs::set_permissions(&tmp_path, perms);
+        }
+        Ok(())
+    })();
+
+    if let Err(err) = write_res {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    if let Err(err) = fs::rename(&tmp_path, target) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err).with_context(|| {
+            format!(
+                "Failed to atomically replace {} from {}",
+                target.display(),
+                tmp_path.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+/// Moves `src` onto `dst` atomically when on the same filesystem, falling back to a sibling
+/// temp copy + rename when crossing filesystems.
+pub fn atomic_move_file(src: &Path, dst: &Path) -> Result<()> {
+    let existing_perms = fs::metadata(dst).ok().map(|m| m.permissions());
+    if let Some(perms) = existing_perms.as_ref() {
+        let _ = fs::set_permissions(src, perms.clone());
+    }
+    if fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    let parent = dst.parent().unwrap_or_else(|| Path::new("."));
+    let sibling_tmp = unique_temp_path(parent, "clop_move", "part");
+    if let Err(err) = fs::copy(src, &sibling_tmp) {
+        let _ = fs::remove_file(&sibling_tmp);
+        return Err(err).with_context(|| {
+            format!(
+                "Failed to copy temporary output {} to {}",
+                src.display(),
+                sibling_tmp.display()
+            )
+        });
+    }
+    if let Some(perms) = existing_perms {
+        let _ = fs::set_permissions(&sibling_tmp, perms);
+    }
+    let _ = fs::remove_file(src);
+    if let Err(err) = fs::rename(&sibling_tmp, dst) {
+        let _ = fs::remove_file(&sibling_tmp);
+        return Err(err).with_context(|| format!("Failed to replace {}", dst.display()));
+    }
+    Ok(())
+}
+
+/// Disk-backed backup of an original file for one-click Revert without holding large files in RAM.
+/// Automatically removes its cached copy on drop.
+#[derive(Debug)]
+pub struct DiskBackup {
+    pub original_path: PathBuf,
+    pub backup_path: PathBuf,
+    pub original_size: usize,
+}
+
+impl DiskBackup {
+    pub fn create(original_path: &Path) -> Result<Self> {
+        let meta = fs::metadata(original_path)
+            .with_context(|| format!("Failed to stat {} for backup", original_path.display()))?;
+        let original_size = meta.len() as usize;
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(env::temp_dir)
+            .join("clop-rs")
+            .join("revert-cache");
+        fs::create_dir_all(&cache_dir)?;
+        let ext = original_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("bak");
+        let backup_path = unique_temp_path(&cache_dir, "revert", ext);
+        fs::copy(original_path, &backup_path).with_context(|| {
+            format!(
+                "Failed to snapshot {} into revert cache",
+                original_path.display()
+            )
+        })?;
+        Ok(Self {
+            original_path: original_path.to_path_buf(),
+            backup_path,
+            original_size,
+        })
+    }
+
+    pub fn restore(self) -> Result<(PathBuf, usize)> {
+        atomic_move_file(&self.backup_path, &self.original_path)?;
+        Ok((self.original_path.clone(), self.original_size))
+    }
+}
+
+impl Drop for DiskBackup {
+    fn drop(&mut self) {
+        if self.backup_path.exists() {
+            let _ = fs::remove_file(&self.backup_path);
+        }
+    }
+}
 
 /// Result of optimizing an in-memory or clipboard image.
 #[derive(Debug, Clone)]
@@ -235,7 +375,7 @@ pub fn optimize_file(
 
         let was_modified = best_bytes.len() < original_size || resized || exif_removed;
         if was_modified || output_path.is_some() {
-            fs::write(target, &best_bytes).with_context(|| {
+            atomic_write_file(target, &best_bytes).with_context(|| {
                 format!("Failed to write optimized JPEG to {}", target.display())
             })?;
         }
@@ -257,6 +397,54 @@ pub fn optimize_file(
         });
     }
 
+    // Preserve native format for WebP, BMP, and TIFF targets (never write PNG bytes into a .webp/.bmp/.tiff file!)
+    let target_ext = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    let native_non_png_format = match target_ext.as_deref() {
+        Some("webp") => Some(ImageFormat::WebP),
+        Some("bmp") => Some(ImageFormat::Bmp),
+        Some("tiff") | Some("tif") => Some(ImageFormat::Tiff),
+        _ => None,
+    };
+
+    if let Some(out_fmt) = native_non_png_format {
+        let (work_w, work_h, work_rgba, resized) = maybe_downscale(w, h, decoded.as_raw(), config)?;
+        let dyn_img = image::DynamicImage::ImageRgba8(
+            RgbaImage::from_raw(work_w, work_h, work_rgba.clone())
+                .context("Failed to reconstruct RGBA image for native format encoding")?,
+        );
+        let mut encoded = Vec::new();
+        dyn_img
+            .write_to(&mut Cursor::new(&mut encoded), out_fmt)
+            .with_context(|| format!("Failed to encode image as {:?}", out_fmt))?;
+
+        let improved = encoded.len() < original_size || resized;
+        let bytes_to_write = if improved { &encoded } else { &raw_bytes };
+        if improved || output_path.is_some() {
+            atomic_write_file(target, bytes_to_write).with_context(|| {
+                format!("Failed to write optimized image to {}", target.display())
+            })?;
+        }
+        let optimized_size = if improved {
+            encoded.len()
+        } else {
+            original_size
+        };
+        return Ok(OptimizedImage {
+            png_bytes: if improved { encoded } else { raw_bytes },
+            rgba_bytes: work_rgba,
+            width: work_w,
+            height: work_h,
+            original_size,
+            optimized_size,
+            was_modified: improved,
+            exif_stripped: improved && config.strip_metadata,
+            elapsed: start.elapsed(),
+        });
+    }
+
     let original_png_ref = if format == ImageFormat::Png {
         Some(raw_bytes.as_slice())
     } else {
@@ -267,7 +455,7 @@ pub fn optimize_file(
     result.original_size = original_size;
 
     if result.png_bytes.len() < original_size || result.exif_stripped || output_path.is_some() {
-        fs::write(target, &result.png_bytes)
+        atomic_write_file(target, &result.png_bytes)
             .with_context(|| format!("Failed to write optimized image to {}", target.display()))?;
         result.optimized_size = result.png_bytes.len();
         result.was_modified = result.optimized_size < original_size || result.exif_stripped;
@@ -709,9 +897,4 @@ pub fn format_bytes(bytes: usize) -> String {
     } else {
         format!("{} B", bytes)
     }
-}
-
-#[allow(dead_code)]
-fn _unused_outfile_imports() -> (InFile, OutFile) {
-    (InFile::StdIn, OutFile::StdOut)
 }
