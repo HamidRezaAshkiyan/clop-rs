@@ -58,10 +58,14 @@ cat > "$APP_DIR/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# Generate AppIcon.icns
+# Generate AppIcon.icns from assets/logo.png (falling back to procedural icon if missing)
 ICONSET_DIR="$DIST_DIR/AppIcon.iconset"
 mkdir -p "$ICONSET_DIR"
-python3 - "$ICONSET_DIR/icon_512x512@2x.png" <<'PY'
+LOGO_SRC="$ROOT_DIR/assets/logo.png"
+if [ -f "$LOGO_SRC" ]; then
+    sips -s format png -z 1024 1024 "$LOGO_SRC" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
+else
+    python3 - "$ICONSET_DIR/icon_512x512@2x.png" <<'PY'
 import sys, struct, zlib
 
 out_path = sys.argv[1]
@@ -70,7 +74,6 @@ raw = bytearray()
 for y in range(h):
     raw.append(0)
     for x in range(w):
-        # Dark slate rounded card with emerald lightning/compression emblem
         dx = min(x, w - 1 - x)
         dy = min(y, h - 1 - y)
         if dx < 20 and dy < 20 and (20 - dx)**2 + (20 - dy)**2 > 400:
@@ -93,17 +96,22 @@ png = (
 )
 open(out_path, "wb").write(png)
 PY
+fi
 
 for sz in 16 32 128 256 512; do
-    sips -z $sz $sz "$ICONSET_DIR/icon_512x512@2x.png" --out "$ICONSET_DIR/icon_${sz}x${sz}.png" >/dev/null
+    sips -s format png -z $sz $sz "$ICONSET_DIR/icon_512x512@2x.png" --out "$ICONSET_DIR/icon_${sz}x${sz}.png" >/dev/null
     sz2=$((sz * 2))
-    sips -z $sz2 $sz2 "$ICONSET_DIR/icon_512x512@2x.png" --out "$ICONSET_DIR/icon_${sz}x${sz}@2x.png" >/dev/null
+    sips -s format png -z $sz2 $sz2 "$ICONSET_DIR/icon_512x512@2x.png" --out "$ICONSET_DIR/icon_${sz}x${sz}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns" || true
 rm -rf "$ICONSET_DIR"
 
-# Ad-hoc sign the app bundle
-codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
+# Sign the app bundle (Developer ID when APPLE_SIGNING_IDENTITY is set, otherwise ad-hoc)
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+    codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_DIR"
+else
+    codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
+fi
 
 # 1. Build macOS .pkg installer (installs /Applications/clop-rs.app, /usr/local/bin/clop-rs, and Finder Quick Action)
 PKG_ROOT="$DIST_DIR/pkg_root"
@@ -159,6 +167,16 @@ cp -R "$APP_DIR" "$TAR_STAGING/"
 cp "$ROOT_DIR/README.md" "$ROOT_DIR/LICENSE" "$TAR_STAGING/"
 tar -czf "$DIST_DIR/clop-rs-${VERSION}-macos-${ARCH}.tar.gz" -C "$DIST_DIR" "clop-rs-${VERSION}-macos-${ARCH}"
 rm -rf "$TAR_STAGING" "$APP_DIR"
+
+if [ -n "${APPLE_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
+    echo "Notarizing .pkg and .dmg with profile ${APPLE_NOTARY_KEYCHAIN_PROFILE}..."
+    xcrun notarytool submit "$PKG_PATH" --keychain-profile "$APPLE_NOTARY_KEYCHAIN_PROFILE" --wait
+    xcrun stapler staple "$PKG_PATH" || true
+    if [ -f "$DMG_PATH" ]; then
+        xcrun notarytool submit "$DMG_PATH" --keychain-profile "$APPLE_NOTARY_KEYCHAIN_PROFILE" --wait
+        xcrun stapler staple "$DMG_PATH" || true
+    fi
+fi
 
 echo "Packaged release artifacts in $DIST_DIR:"
 ls -lh "$DIST_DIR"
