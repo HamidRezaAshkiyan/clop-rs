@@ -3,6 +3,83 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+/// Guard holding the OS single-instance lock for the tray daemon.
+/// When dropped, cleans up the lock/socket resource.
+pub struct SingleInstanceGuard {
+    #[cfg(unix)]
+    socket_path: PathBuf,
+    #[cfg(windows)]
+    _lock_file: fs::File,
+}
+
+#[cfg(unix)]
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.socket_path);
+    }
+}
+
+/// Attempts to acquire the single-instance lock for the GUI tray daemon.
+///
+/// - If no other instance is running, returns `Some(SingleInstanceGuard)` and (on Unix)
+///   listens in the background for activation pings from future launches, invoking `on_activate`.
+/// - If another instance is already running, signals it to focus its Dashboard (on Unix)
+///   and returns `None`.
+pub fn acquire_single_instance<F>(on_activate: F) -> Option<SingleInstanceGuard>
+where
+    F: Fn() + Send + 'static,
+{
+    #[cfg(unix)]
+    {
+        use std::io::{Read, Write};
+        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::thread;
+
+        let socket_path = env::temp_dir().join("clop-rs-instance.sock");
+        if let Ok(mut stream) = UnixStream::connect(&socket_path) {
+            let _ = stream.write_all(b"show\n");
+            return None;
+        }
+        // Stale socket from a previous crashed run
+        let _ = fs::remove_file(&socket_path);
+        match UnixListener::bind(&socket_path) {
+            Ok(listener) => {
+                thread::spawn(move || {
+                    for mut stream in listener.incoming().flatten() {
+                        let mut buf = [0u8; 16];
+                        let _ = stream.read(&mut buf);
+                        on_activate();
+                    }
+                });
+                Some(SingleInstanceGuard { socket_path })
+            }
+            Err(err) => {
+                log::warn!("Could not bind single-instance socket: {}", err);
+                // Proceed rather than failing to launch if temp dir is restricted
+                let _ = on_activate;
+                None
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let _ = on_activate;
+        let lock_path = env::temp_dir().join("clop-rs-instance.lock");
+        match fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .share_mode(0)
+            .open(&lock_path)
+        {
+            Ok(file) => Some(SingleInstanceGuard { _lock_file: file }),
+            Err(_) => None,
+        }
+    }
+}
+
 /// Returns a lightweight OS clipboard sequence / change counter if supported by the OS.
 ///
 /// - On **macOS**: Queries `NSPasteboard.generalPasteboard.changeCount` (O(1), zero allocation).
