@@ -71,6 +71,7 @@ where
         match fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(true)
             .share_mode(0)
             .open(&lock_path)
         {
