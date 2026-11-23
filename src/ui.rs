@@ -1,12 +1,13 @@
-use crate::clipboard::OptimizationSummary;
+use crate::clipboard::{OptimizationSummary, SessionStats};
 use crate::config::{AppConfig, OptimizationPreset};
 use crate::downloads::is_supported_media_path;
-use crate::history::OptimizationHistory;
+use crate::history::{HistorySource, OptimizationHistory};
+use crate::hud::RevertSource;
 use crate::optimizer::{
-    self, generate_thumbnail, supported_formats_info, SUPPORTED_DOCUMENT_EXTENSIONS,
-    SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_VIDEO_EXTENSIONS,
+    self, generate_thumbnail, supported_formats_info, SupportedFormatsInfo,
+    SUPPORTED_DOCUMENT_EXTENSIONS, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_VIDEO_EXTENSIONS,
 };
-use crate::{context_menu, pdf, platform, video};
+use crate::{pdf, platform, video};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -15,20 +16,70 @@ use std::thread;
 use tao::dpi::LogicalSize;
 use tao::event_loop::{EventLoopProxy, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder, WindowId};
+use tray_icon::menu::MenuId;
 use wry::{DragDropEvent, WebView, WebViewBuilder};
 
 const UI_HTML: &str = include_str!("ui.html");
 pub const DASHBOARD_WIDTH: f64 = 820.0;
 pub const DASHBOARD_HEIGHT: f64 = 660.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemToggleKind {
+    Autostart,
+    ContextMenu,
+}
+
+#[derive(Debug)]
+pub enum WorkerOutcome {
+    Optimizing {
+        label: String,
+        width: u32,
+        height: u32,
+        estimated_size: usize,
+        thumbnail_64: Vec<u8>,
+    },
+    Optimized {
+        source: HistorySource,
+        revert_source: RevertSource,
+        file_path: Option<PathBuf>,
+        summary: Box<OptimizationSummary>,
+        stats: Box<SessionStats>,
+        can_revert_clipboard: bool,
+        manual_from_ui: bool,
+    },
+    Skipped {
+        manual_from_ui: bool,
+        manual_from_tray: bool,
+        message: String,
+    },
+    Error {
+        manual_from_ui: bool,
+        error: String,
+    },
+    Reverted {
+        label: String,
+        restored_size: usize,
+        can_revert_clipboard: bool,
+        from_ui: bool,
+    },
+}
+
 /// Custom events routed through the `tao` event loop between the WebView, drag-and-drop,
-/// and background file-optimization worker threads.
+/// tray menu, single-instance listener, and background worker threads.
 #[derive(Debug)]
 pub enum AppEvent {
     UiIpc(String),
     UiFileHover(bool),
     UiFileDrop(Vec<PathBuf>),
     FileProgress(Box<FileProgressUpdate>),
+    TrayMenu(MenuId),
+    ActivateExistingInstance,
+    Worker(Box<WorkerOutcome>),
+    SystemToggleResult {
+        kind: SystemToggleKind,
+        enabled: bool,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,6 +146,8 @@ pub struct DashboardWindow {
     window: Option<Window>,
     webview: Option<WebView>,
     proxy: EventLoopProxy<AppEvent>,
+    /// Cached supported format & external tool availability (avoids scanning PATH on every UI click).
+    formats_cache: SupportedFormatsInfo,
     /// Per-file backups of original bytes so the user can revert files optimized in the UI.
     pub file_backups: HashMap<String, Vec<u8>>,
 }
@@ -105,12 +158,17 @@ impl DashboardWindow {
             window: None,
             webview: None,
             proxy,
+            formats_cache: supported_formats_info(),
             file_backups: HashMap::new(),
         }
     }
 
     pub fn window_id(&self) -> Option<WindowId> {
         self.window.as_ref().map(|w| w.id())
+    }
+
+    pub fn proxy_clone(&self) -> EventLoopProxy<AppEvent> {
+        self.proxy.clone()
     }
 
     pub fn is_open(&self) -> bool {
@@ -199,12 +257,15 @@ impl DashboardWindow {
     }
 
     /// Pushes the complete current application state (config, history, stats, formats, system flags) to the UI.
+    #[allow(clippy::too_many_arguments)]
     pub fn push_state(
         &self,
         config: &AppConfig,
         history: &OptimizationHistory,
         paused: bool,
         can_revert_clipboard: bool,
+        autostart: bool,
+        context_menu: bool,
     ) {
         let effective_downloads_dir = config
             .effective_downloads_dir()
@@ -216,11 +277,42 @@ impl DashboardWindow {
             "config": config,
             "history": history.entries,
             "stats": history.stats(),
-            "formats": supported_formats_info(),
+            "formats": &self.formats_cache,
             "system": SystemUiState {
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                autostart: platform::is_autostart_enabled(),
-                context_menu: context_menu::is_context_menu_enabled(),
+                autostart,
+                context_menu,
+                paused,
+                can_revert_clipboard,
+                effective_downloads_dir,
+            }
+        });
+        self.send_json(&payload);
+    }
+
+    /// Pushes only config & system flags (skipping the 200-entry base64 history array)
+    /// so toggling settings or tray menu items is instantaneous.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_light_state(
+        &self,
+        config: &AppConfig,
+        paused: bool,
+        can_revert_clipboard: bool,
+        autostart: bool,
+        context_menu: bool,
+    ) {
+        let effective_downloads_dir = config
+            .effective_downloads_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "~/Downloads".to_string());
+
+        let payload = serde_json::json!({
+            "type": "light_state",
+            "config": config,
+            "system": SystemUiState {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                autostart,
+                context_menu,
                 paused,
                 can_revert_clipboard,
                 effective_downloads_dir,

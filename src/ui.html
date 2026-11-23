@@ -1477,6 +1477,15 @@
         renderConfig();
         renderHistory();
         break;
+      case "light_state":
+        state.config = msg.config;
+        state.system = msg.system || {};
+        if (state.system.version) {
+          const verEl = document.getElementById("app-version");
+          if (verEl) verEl.textContent = "v" + state.system.version;
+        }
+        renderConfig();
+        break;
       case "drag_hover":
         document.getElementById("dropzone").classList.toggle("drag-over", !!msg.active);
         break;
