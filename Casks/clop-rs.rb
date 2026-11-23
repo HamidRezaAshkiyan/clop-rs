@@ -1,8 +1,8 @@
 cask "clop-rs" do
   arch arm: "arm64"
 
-  version "0.4.6"
-  sha256 "1104bc40b9e25ab6c2273551de33b0946a7dbf05a5fd90443f259ca947c14c93"
+  version "1.0.0"
+  sha256 "bfa1b292f23f3f1c1401fcf2a650db0b2edb079746fcfd4b0a4404ad8a4b87a9"
 
   url "https://github.com/HamidRezaAshkiyan/clop-rs/releases/download/v#{version}/clop-rs-v#{version}-macos-#{arch}.pkg"
   name "clop-rs"
