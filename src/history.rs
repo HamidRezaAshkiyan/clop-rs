@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_HISTORY_ENTRIES: usize = 200;
+pub const HISTORY_SCHEMA_VERSION: u32 = 1;
+
+fn default_history_schema_version() -> u32 {
+    HISTORY_SCHEMA_VERSION
+}
 
 /// Origin of an optimization history entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,12 +70,24 @@ pub struct HistoryStats {
     pub overall_saved_percent: f64,
 }
 
-/// Persistent optimization history stored in `~/.config/clop-rs/history.json`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Persistent optimization history stored in the OS config directory (`history.json`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizationHistory {
+    #[serde(default = "default_history_schema_version")]
+    pub schema_version: u32,
     pub entries: Vec<HistoryEntry>,
     #[serde(default)]
     next_id: u64,
+}
+
+impl Default for OptimizationHistory {
+    fn default() -> Self {
+        Self {
+            schema_version: HISTORY_SCHEMA_VERSION,
+            entries: Vec::new(),
+            next_id: 0,
+        }
+    }
 }
 
 impl OptimizationHistory {

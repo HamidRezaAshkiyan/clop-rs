@@ -105,7 +105,7 @@ curl -fsSL https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download
 irm https://github.com/HamidRezaAshkiyan/clop-rs/releases/latest/download/install.ps1 | iex
 ```
 
-### Option 3: Build from Source
+### Option 5: Build from Source
 
 ```bash
 git clone https://github.com/HamidRezaAshkiyan/clop-rs.git
@@ -204,7 +204,7 @@ Launch an interactive, keyboard-driven TUI right in your terminal via `clop-cli 
 - **`Ctrl+X` Leader Key Combos**: `Ctrl+X c` (clipboard), `Ctrl+X w` (watch), `Ctrl+X p` (cycle preset), `Ctrl+X u` (undo), `Ctrl+X t` (cycle theme), `Ctrl+X d` (toggle sidebar), `Ctrl+X h` (help), `Ctrl+X q` (quit).
 - **4 Built-in Themes**: `opencode-dark`, `tokyo-night`, `catppuccin`, and `gruvbox`.
 
-### 7. Enable / Disable Launch at Login
+### 8. Enable / Disable Launch at Login
 ```bash
 # Enable auto-start (macOS LaunchAgent / Windows Startup)
 clop-rs autostart --enable
@@ -213,7 +213,7 @@ clop-rs autostart --enable
 clop-rs autostart --disable
 ```
 
-### 7. View or Save Persistent Configuration
+### 9. View or Save Persistent Configuration
 Configuration is stored in:
 - **macOS**: `~/Library/Application Support/clop-rs/config.toml`
 - **Windows**: `%APPDATA%\clop-rs\config.toml`
