@@ -18,10 +18,10 @@ pub struct PendingDownloadFile {
     pub thumbnail_64: Vec<u8>,
 }
 
-/// Watches the user's Downloads directory for newly added image, PDF, and video files
-/// and optimizes them automatically.
+/// Watches the user's configured directories (Downloads + any `extra_watch_dirs`) for newly added
+/// image, PDF, and video files and optimizes them automatically.
 pub struct DownloadsWatcher {
-    watched_dir: Option<PathBuf>,
+    watched_dirs: Vec<PathBuf>,
     seen_files: HashMap<PathBuf, (SystemTime, u64)>,
     pub last_backup: Option<DiskBackup>,
 }
@@ -35,7 +35,7 @@ impl Default for DownloadsWatcher {
 impl DownloadsWatcher {
     pub fn new(dir: Option<PathBuf>) -> Self {
         let mut watcher = Self {
-            watched_dir: None,
+            watched_dirs: Vec::new(),
             seen_files: HashMap::new(),
             last_backup: None,
         };
@@ -45,15 +45,22 @@ impl DownloadsWatcher {
         watcher
     }
 
-    /// Updates the watched directory and snapshots existing files so only *new* or *newly modified*
-    /// files arriving after enabling the watcher are optimized.
+    /// Updates the watched directory to a single optional directory and snapshots existing files.
     pub fn set_directory(&mut self, dir: Option<PathBuf>) {
-        if self.watched_dir == dir {
+        let dirs = dir.into_iter().collect();
+        self.set_directories(dirs);
+    }
+
+    /// Updates the set of watched directories and snapshots existing files so only *new* or
+    /// *newly modified* files arriving after enabling the watcher are optimized.
+    pub fn set_directories(&mut self, dirs: Vec<PathBuf>) {
+        if self.watched_dirs == dirs {
             return;
         }
-        self.watched_dir = dir;
+        self.watched_dirs = dirs;
         self.seen_files.clear();
-        if let Some(d) = self.watched_dir.clone() {
+        let to_snapshot = self.watched_dirs.clone();
+        for d in to_snapshot {
             self.snapshot_existing(&d);
         }
     }
@@ -74,79 +81,90 @@ impl DownloadsWatcher {
         }
     }
 
-    /// Scans the watched Downloads directory for the next new unoptimized image, PDF, or video file.
+    /// Scans all watched directories for the next new unoptimized image, PDF, or video file.
     pub fn inspect_next_file(&mut self, config: &AppConfig) -> Option<PendingDownloadFile> {
         if !config.watch_downloads {
             return None;
         }
-        let target_dir = config.effective_downloads_dir()?;
-        if self.watched_dir.as_ref() != Some(&target_dir) {
-            self.set_directory(Some(target_dir.clone()));
+        let target_dirs = config.all_watch_dirs();
+        if target_dirs.is_empty() {
+            return None;
+        }
+        if self.watched_dirs != target_dirs {
+            self.set_directories(target_dirs.clone());
         }
 
-        let entries = fs::read_dir(&target_dir).ok()?;
         let now = SystemTime::now();
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() || !is_supported_media_path(&path) {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            let len = meta.len();
-            if len == 0 || len > 500 * 1024 * 1024 {
-                continue;
-            }
-            let Ok(mtime) = meta.modified() else {
+        for target_dir in &target_dirs {
+            let Ok(entries) = fs::read_dir(target_dir) else {
                 continue;
             };
 
-            // Wait at least 300ms after the last write so browser downloads finish flushing
-            if let Ok(age) = now.duration_since(mtime) {
-                if age < Duration::from_millis(300) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file()
+                    || !is_supported_media_path(&path)
+                    || config.is_path_ignored(&path)
+                {
                     continue;
                 }
-            }
-
-            if let Some(&(prev_mtime, prev_len)) = self.seen_files.get(&path) {
-                if prev_mtime == mtime && prev_len == len {
-                    continue;
-                }
-            }
-
-            // Mark seen before reading so unreadable/corrupt files aren't retried in a tight loop
-            self.seen_files.insert(path.clone(), (mtime, len));
-
-            let (width, height, thumbnail_64) = if pdf::is_pdf_path(&path) {
-                (0, 0, pdf::procedural_pdf_icon_64())
-            } else if video::is_video_path(&path) {
-                (0, 0, video::extract_video_thumbnail_64(&path))
-            } else {
-                let Ok(decoded) = image::open(&path) else {
+                let Ok(meta) = entry.metadata() else {
                     continue;
                 };
-                let rgba = decoded.into_rgba8();
-                let (w, h) = rgba.dimensions();
-                let thumb = generate_thumbnail(w, h, rgba.as_raw(), 64);
-                (w, h, thumb)
-            };
+                let len = meta.len();
+                if len == 0 || len > 500 * 1024 * 1024 {
+                    continue;
+                }
+                let Ok(mtime) = meta.modified() else {
+                    continue;
+                };
 
-            let file_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Download")
-                .to_string();
+                // Wait at least 300ms after the last write so browser downloads finish flushing
+                if let Ok(age) = now.duration_since(mtime) {
+                    if age < Duration::from_millis(300) {
+                        continue;
+                    }
+                }
 
-            return Some(PendingDownloadFile {
-                path,
-                file_name,
-                original_size: len as usize,
-                width,
-                height,
-                thumbnail_64,
-            });
+                if let Some(&(prev_mtime, prev_len)) = self.seen_files.get(&path) {
+                    if prev_mtime == mtime && prev_len == len {
+                        continue;
+                    }
+                }
+
+                // Mark seen before reading so unreadable/corrupt files aren't retried in a tight loop
+                self.seen_files.insert(path.clone(), (mtime, len));
+
+                let (width, height, thumbnail_64) = if pdf::is_pdf_path(&path) {
+                    (0, 0, pdf::procedural_pdf_icon_64())
+                } else if video::is_video_path(&path) {
+                    (0, 0, video::extract_video_thumbnail_64(&path))
+                } else {
+                    let Ok(decoded) = image::open(&path) else {
+                        continue;
+                    };
+                    let rgba = decoded.into_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    let thumb = generate_thumbnail(w, h, rgba.as_raw(), 64);
+                    (w, h, thumb)
+                };
+
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Download")
+                    .to_string();
+
+                return Some(PendingDownloadFile {
+                    path,
+                    file_name,
+                    original_size: len as usize,
+                    width,
+                    height,
+                    thumbnail_64,
+                });
+            }
         }
 
         None

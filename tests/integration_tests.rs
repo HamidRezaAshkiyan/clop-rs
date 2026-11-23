@@ -615,3 +615,171 @@ fn test_mozjpeg_progressive_and_trellis_compression() {
         baseline_jpg.len()
     );
 }
+
+#[test]
+fn test_native_webp_bmp_tiff_format_preservation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (w, h) = (128u32, 128u32);
+    let rgba = generate_synthetic_screenshot(w, h);
+    let dyn_img =
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(w, h, rgba).expect("rgba"));
+
+    let cfg = AppConfig {
+        max_width: Some(64), // Force resize so write path is always exercised
+        ..Default::default()
+    };
+
+    for (ext, fmt, expected_fmt) in [
+        ("webp", image::ImageFormat::WebP, image::ImageFormat::WebP),
+        ("bmp", image::ImageFormat::Bmp, image::ImageFormat::Bmp),
+        ("tiff", image::ImageFormat::Tiff, image::ImageFormat::Tiff),
+    ] {
+        let path = dir.path().join(format!("sample.{ext}"));
+        dyn_img.save_with_format(&path, fmt).expect("save sample");
+
+        let res = optimize_file(&path, None, &cfg).expect("optimize native format");
+        assert!(res.was_modified, "{ext} should be modified after downscale");
+
+        let out_bytes = std::fs::read(&path).expect("read output");
+        assert!(
+            !out_bytes.starts_with(b"\x89PNG"),
+            "{ext} must never be overwritten with PNG bytes"
+        );
+        let guessed = image::guess_format(&out_bytes).expect("guess output format");
+        assert_eq!(guessed, expected_fmt, "{ext} must preserve native format");
+    }
+}
+
+#[test]
+fn test_atomic_write_and_disk_backup_restore() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("atomic_test.bin");
+
+    // Unique temp paths never collide
+    let t1 = clop_rs::optimizer::unique_temp_path(dir.path(), "test", "tmp");
+    let t2 = clop_rs::optimizer::unique_temp_path(dir.path(), "test", "tmp");
+    assert_ne!(t1, t2);
+
+    clop_rs::optimizer::atomic_write_file(&target, b"original-payload").expect("initial write");
+    assert_eq!(std::fs::read(&target).unwrap(), b"original-payload");
+
+    let backup = clop_rs::optimizer::DiskBackup::create(&target).expect("create disk backup");
+    let backup_file_path = backup.backup_path.clone();
+    assert!(backup_file_path.exists());
+
+    clop_rs::optimizer::atomic_write_file(&target, b"optimized").expect("overwrite");
+    assert_eq!(std::fs::read(&target).unwrap(), b"optimized");
+
+    let (restored_path, restored_len) = backup.restore().expect("restore backup");
+    assert_eq!(restored_path, target);
+    assert_eq!(restored_len, b"original-payload".len());
+    assert_eq!(std::fs::read(&target).unwrap(), b"original-payload");
+    assert!(
+        !backup_file_path.exists(),
+        "backup cache file should be cleaned up after restore"
+    );
+}
+
+#[test]
+fn test_pdf_safety_guards_encrypted_signed_and_objstm() {
+    let cfg = AppConfig::default();
+
+    let encrypted_pdf = b"%PDF-1.7\n1 0 obj\n<< /Encrypt 2 0 R >>\nendobj\n%%EOF\n";
+    assert!(clop_rs::pdf::is_encrypted_or_signed_pdf(encrypted_pdf));
+    assert!(clop_rs::pdf::optimize_pdf_bytes_native(encrypted_pdf, &cfg).is_none());
+
+    let signed_pdf =
+        b"%PDF-1.7\n1 0 obj\n<< /Type /Sig /ByteRange [0 10 20 30] >>\nendobj\n%%EOF\n";
+    assert!(clop_rs::pdf::is_encrypted_or_signed_pdf(signed_pdf));
+    assert!(clop_rs::pdf::optimize_pdf_bytes_native(signed_pdf, &cfg).is_none());
+
+    let objstm_pdf = b"%PDF-1.5\n1 0 obj\n<< /Type /ObjStm /N 2 /First 10 >>\nendobj\n%%EOF\n";
+    assert!(clop_rs::pdf::has_compressed_pdf_structures(objstm_pdf));
+    assert!(clop_rs::pdf::optimize_pdf_bytes_native(objstm_pdf, &cfg).is_none());
+
+    // End-to-end optimize_pdf_file leaves encrypted PDF byte-for-byte untouched
+    let dir = tempfile::tempdir().expect("tempdir");
+    let enc_path = dir.path().join("encrypted.pdf");
+    std::fs::write(&enc_path, encrypted_pdf).expect("write encrypted pdf");
+    let res = clop_rs::pdf::optimize_pdf_file(&enc_path, None, &cfg).expect("safe skip");
+    assert!(!res.was_modified);
+    assert_eq!(std::fs::read(&enc_path).unwrap(), encrypted_pdf);
+}
+
+#[test]
+fn test_multi_folder_watcher_and_ignore_patterns() {
+    let primary = tempfile::tempdir().expect("primary dir");
+    let extra = tempfile::tempdir().expect("extra dir");
+
+    let cfg = AppConfig {
+        watch_downloads: true,
+        downloads_dir: Some(primary.path().to_path_buf()),
+        extra_watch_dirs: vec![extra.path().to_path_buf()],
+        ignore_patterns: vec!["*-raw.*".to_string(), "secret_*".to_string()],
+        ..Default::default()
+    };
+
+    assert!(cfg.is_path_ignored(std::path::Path::new("/tmp/photo-raw.png")));
+    assert!(cfg.is_path_ignored(std::path::Path::new("/tmp/SECRET_doc.pdf")));
+    assert!(!cfg.is_path_ignored(std::path::Path::new("/tmp/screenshot.png")));
+
+    let mut watcher = clop_rs::downloads::DownloadsWatcher::new(None);
+    // Snapshot initial empty dirs
+    assert!(watcher.inspect_next_file(&cfg).is_none());
+
+    let (w, h) = (96u32, 96u32);
+    let rgba = generate_synthetic_screenshot(w, h);
+    let raw_png = encode_rgba_png(w, h, &rgba).expect("encode png");
+
+    // Ignored file in primary dir should be skipped
+    std::fs::write(primary.path().join("photo-raw.png"), &raw_png).expect("write ignored");
+    // Valid file in extra watch dir should be picked up
+    let extra_file = extra.path().join("desktop_shot.png");
+    std::fs::write(&extra_file, &raw_png).expect("write extra");
+
+    std::thread::sleep(std::time::Duration::from_millis(350));
+
+    let pending = watcher
+        .inspect_next_file(&cfg)
+        .expect("should detect file in extra_watch_dirs");
+    assert_eq!(pending.path, extra_file);
+}
+
+#[test]
+fn test_config_and_history_schema_version() {
+    let cfg = AppConfig::default();
+    assert_eq!(cfg.schema_version, clop_rs::config::CONFIG_SCHEMA_VERSION);
+    let toml_str = toml::to_string_pretty(&cfg).expect("serialize config");
+    let parsed: AppConfig = toml::from_str(&toml_str).expect("parse config");
+    assert_eq!(parsed.schema_version, 1);
+
+    let hist = clop_rs::history::OptimizationHistory::default();
+    assert_eq!(
+        hist.schema_version,
+        clop_rs::history::HISTORY_SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn test_ui_command_ipc_deserialization() {
+    let ready: clop_rs::ui::UiCommand =
+        serde_json::from_str(r#"{"type":"ready"}"#).expect("parse ready");
+    assert!(matches!(ready, clop_rs::ui::UiCommand::Ready));
+
+    let preset: clop_rs::ui::UiCommand =
+        serde_json::from_str(r#"{"type":"apply_preset","preset":"smallest-size"}"#)
+            .expect("parse preset");
+    assert!(matches!(
+        preset,
+        clop_rs::ui::UiCommand::ApplyPreset {
+            preset: clop_rs::config::OptimizationPreset::SmallestSize
+        }
+    ));
+
+    let pause: clop_rs::ui::UiCommand =
+        serde_json::from_str(r#"{"type":"toggle_pause","paused":true}"#).expect("parse pause");
+    assert!(matches!(
+        pause,
+        clop_rs::ui::UiCommand::TogglePause { paused: true }
+    ));
+}

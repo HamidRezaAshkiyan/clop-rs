@@ -56,11 +56,20 @@ impl OptimizationPreset {
     }
 }
 
-/// Persistent configuration stored in `~/.config/clop-rs/config.toml` (macOS/Linux)
-/// or `%APPDATA%\clop-rs\config.toml` (Windows).
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    CONFIG_SCHEMA_VERSION
+}
+
+/// Persistent configuration stored in `~/Library/Application Support/clop-rs/config.toml` (macOS),
+/// `~/.config/clop-rs/config.toml` (Linux), or `%APPDATA%\clop-rs\config.toml` (Windows).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    /// Configuration schema version for forward-compatible v1.x migrations.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     /// Clipboard polling interval in milliseconds.
     pub poll_interval_ms: u64,
     /// Optimization mode: `smart` (lossy palette + lossless deflate) or `lossless`.
@@ -89,6 +98,12 @@ pub struct AppConfig {
     pub watch_downloads: bool,
     /// Optional custom directory to watch instead of the OS default Downloads directory.
     pub downloads_dir: Option<PathBuf>,
+    /// Additional directories to watch alongside `downloads_dir` (e.g. `~/Desktop` for screenshots).
+    #[serde(default)]
+    pub extra_watch_dirs: Vec<PathBuf>,
+    /// Case-insensitive wildcard filename patterns to skip during folder watching (e.g. `*-raw.*`, `secret_*`).
+    #[serde(default)]
+    pub ignore_patterns: Vec<String>,
     /// Run without a system tray / menu bar icon.
     pub headless: bool,
 }
@@ -96,6 +111,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            schema_version: CONFIG_SCHEMA_VERSION,
             poll_interval_ms: 350,
             mode: OptimizationMode::Smart,
             preset: OptimizationPreset::Balanced,
@@ -110,6 +126,8 @@ impl Default for AppConfig {
             show_floating_hud: true,
             watch_downloads: false,
             downloads_dir: None,
+            extra_watch_dirs: Vec::new(),
+            ignore_patterns: Vec::new(),
             headless: false,
         }
     }
@@ -143,9 +161,38 @@ impl AppConfig {
         Ok(path)
     }
 
-    /// Returns the effective Downloads folder to watch.
+    /// Returns the effective primary Downloads folder to watch.
     pub fn effective_downloads_dir(&self) -> Option<PathBuf> {
         self.downloads_dir.clone().or_else(dirs::download_dir)
+    }
+
+    /// Returns all deduplicated directories to watch when folder auto-optimization is enabled.
+    pub fn all_watch_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(primary) = self.effective_downloads_dir() {
+            dirs.push(primary);
+        }
+        for extra in &self.extra_watch_dirs {
+            if !dirs.contains(extra) {
+                dirs.push(extra.clone());
+            }
+        }
+        dirs
+    }
+
+    /// Returns `true` if `path`'s filename matches any configured wildcard in `ignore_patterns`.
+    pub fn is_path_ignored(&self, path: &std::path::Path) -> bool {
+        if self.ignore_patterns.is_empty() {
+            return false;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return false;
+        };
+        let name_lower = name.to_ascii_lowercase();
+        self.ignore_patterns.iter().any(|pat| {
+            let pat_lower = pat.trim().to_ascii_lowercase();
+            !pat_lower.is_empty() && wildcard_match(&pat_lower, &name_lower)
+        })
     }
 
     /// Applies a high-level quality-vs-size preset, updating `mode`, `quality_level`,
@@ -470,4 +517,36 @@ pub enum Commands {
         #[arg(long)]
         disable: bool,
     },
+}
+
+/// Simple wildcard matcher supporting `*` (zero or more chars) and `?` (single char).
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star_idx: Option<usize> = None;
+    let mut match_idx: usize = 0;
+
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star_idx = Some(pi);
+            match_idx = ti;
+            pi += 1;
+        } else if let Some(s) = star_idx {
+            pi = s + 1;
+            match_idx += 1;
+            ti = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+
+    pi == p.len()
 }
