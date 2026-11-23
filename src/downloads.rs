@@ -1,25 +1,18 @@
 use crate::clipboard::OptimizationSummary;
 use crate::config::AppConfig;
-use crate::optimizer::{self, format_bytes, generate_thumbnail};
+use crate::optimizer::{self, format_bytes, generate_thumbnail, DiskBackup};
 use crate::{pdf, video};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// Backup of the last optimized file in the Downloads directory for one-click Revert.
-#[derive(Debug, Clone)]
-pub struct FileBackup {
-    pub path: PathBuf,
-    pub original_bytes: Vec<u8>,
-}
-
 /// Newly arrived image, PDF, or video file in the Downloads directory ready for optimization.
 pub struct PendingDownloadFile {
     pub path: PathBuf,
     pub file_name: String,
-    pub original_bytes: Vec<u8>,
+    pub original_size: usize,
     pub width: u32,
     pub height: u32,
     pub thumbnail_64: Vec<u8>,
@@ -30,7 +23,7 @@ pub struct PendingDownloadFile {
 pub struct DownloadsWatcher {
     watched_dir: Option<PathBuf>,
     seen_files: HashMap<PathBuf, (SystemTime, u64)>,
-    pub last_backup: Option<FileBackup>,
+    pub last_backup: Option<DiskBackup>,
 }
 
 impl Default for DownloadsWatcher {
@@ -126,16 +119,12 @@ impl DownloadsWatcher {
             // Mark seen before reading so unreadable/corrupt files aren't retried in a tight loop
             self.seen_files.insert(path.clone(), (mtime, len));
 
-            let Ok(raw_bytes) = fs::read(&path) else {
-                continue;
-            };
-
             let (width, height, thumbnail_64) = if pdf::is_pdf_path(&path) {
                 (0, 0, pdf::procedural_pdf_icon_64())
             } else if video::is_video_path(&path) {
                 (0, 0, video::extract_video_thumbnail_64(&path))
             } else {
-                let Ok(decoded) = image::load_from_memory(&raw_bytes) else {
+                let Ok(decoded) = image::open(&path) else {
                     continue;
                 };
                 let rgba = decoded.into_rgba8();
@@ -153,7 +142,7 @@ impl DownloadsWatcher {
             return Some(PendingDownloadFile {
                 path,
                 file_name,
-                original_bytes: raw_bytes,
+                original_size: len as usize,
                 width,
                 height,
                 thumbnail_64,
@@ -163,14 +152,16 @@ impl DownloadsWatcher {
         None
     }
 
-    /// Optimizes a pending file from the Downloads directory and stores a backup for one-click Revert.
+    /// Optimizes a pending file from the Downloads directory and stores a disk-backed backup for one-click Revert.
     pub fn optimize_pending_file(
         &mut self,
         pending: PendingDownloadFile,
         config: &AppConfig,
     ) -> Result<Option<OptimizationSummary>> {
+        let backup = DiskBackup::create(&pending.path).ok();
         let res = optimizer::optimize_file(&pending.path, None, config)?;
         if !res.was_modified {
+            // `backup` drops here and removes its cached copy automatically
             return Ok(None);
         }
 
@@ -182,10 +173,7 @@ impl DownloadsWatcher {
             }
         }
 
-        self.last_backup = Some(FileBackup {
-            path: pending.path.clone(),
-            original_bytes: pending.original_bytes,
-        });
+        self.last_backup = backup;
 
         let summary = OptimizationSummary {
             source_label: pending.file_name,
@@ -214,27 +202,20 @@ impl DownloadsWatcher {
         let Some(backup) = self.last_backup.take() else {
             return Ok(None);
         };
-        let orig_len = backup.original_bytes.len();
-        fs::write(&backup.path, &backup.original_bytes).with_context(|| {
-            format!(
-                "Failed to restore original file at {}",
-                backup.path.display()
-            )
-        })?;
+        let (path, orig_len) = backup.restore()?;
 
-        if let Ok(meta) = fs::metadata(&backup.path) {
+        if let Ok(meta) = fs::metadata(&path) {
             if let Ok(mtime) = meta.modified() {
-                self.seen_files
-                    .insert(backup.path.clone(), (mtime, meta.len()));
+                self.seen_files.insert(path.clone(), (mtime, meta.len()));
             }
         }
 
         log::info!(
             "Reverted Downloads file '{}' to original ({})",
-            backup.path.display(),
+            path.display(),
             format_bytes(orig_len)
         );
-        Ok(Some((backup.path, orig_len)))
+        Ok(Some((path, orig_len)))
     }
 }
 

@@ -4,7 +4,7 @@ use crate::context_menu;
 use crate::downloads::DownloadsWatcher;
 use crate::history::{HistorySource, OptimizationHistory};
 use crate::hud::{FloatingHud, HudAction, HudPhase, RevertSource};
-use crate::optimizer::{self, format_bytes, generate_thumbnail};
+use crate::optimizer::{self, format_bytes, generate_thumbnail, DiskBackup};
 use crate::ui::{self, AppEvent, DashboardWindow, SystemToggleKind, UiCommand, WorkerOutcome};
 use crate::{pdf, platform, video};
 use anyhow::{Context, Result};
@@ -482,7 +482,7 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
                     dashboard.send_files_added(paths);
                 }
                 AppEvent::FileProgress(mut update) => {
-                    if let Some(backup) = update.backup_bytes.take() {
+                    if let Some(backup) = update.backup.take() {
                         dashboard.file_backups.insert(update.path.clone(), backup);
                     }
                     if let Some(summary) = update.summary.take() {
@@ -660,10 +660,9 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
                             dashboard.spawn_optimize_files(paths, config.clone());
                         }
                         UiCommand::RevertFile { path } => {
-                            if let Some(orig_bytes) = dashboard.file_backups.remove(&path) {
-                                let len = orig_bytes.len();
-                                match fs::write(&path, &orig_bytes) {
-                                    Ok(_) => {
+                            if let Some(backup) = dashboard.file_backups.remove(&path) {
+                                match backup.restore() {
+                                    Ok((_, len)) => {
                                         dashboard.send_file_reverted(&path, len);
                                     }
                                     Err(err) => {
@@ -825,7 +824,7 @@ fn run_background_worker(
                                 label: pending_file.file_name.clone(),
                                 width: pending_file.width,
                                 height: pending_file.height,
-                                estimated_size: pending_file.original_bytes.len(),
+                                estimated_size: pending_file.original_size,
                                 thumbnail_64: pending_file.thumbnail_64.clone(),
                             },
                         )));
@@ -933,7 +932,7 @@ enum FileHudEvent {
     },
     Done {
         last_summary: Option<OptimizationSummary>,
-        backups: Vec<(PathBuf, Vec<u8>)>,
+        backups: Vec<DiskBackup>,
     },
 }
 
@@ -949,11 +948,11 @@ pub fn run_file_with_hud(
     platform::configure_background_app();
 
     let mut hud = FloatingHud::new(&event_loop, true);
-    let mut backups: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut backups: Vec<DiskBackup> = Vec::new();
 
     thread::spawn(move || {
         let mut history = OptimizationHistory::load();
-        let mut local_backups: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        let mut local_backups: Vec<DiskBackup> = Vec::new();
         let mut last_summary: Option<OptimizationSummary> = None;
 
         for path in &paths {
@@ -962,14 +961,18 @@ pub fn run_file_with_hud(
                 .and_then(|n| n.to_str())
                 .unwrap_or("File")
                 .to_string();
-            let orig_bytes = fs::read(path).unwrap_or_default();
-            let orig_len = orig_bytes.len();
+            let orig_len = fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
+            let backup = if output.is_none() {
+                DiskBackup::create(path).ok()
+            } else {
+                None
+            };
 
             let thumb = if pdf::is_pdf_path(path) {
                 pdf::procedural_pdf_icon_64()
             } else if video::is_video_path(path) {
                 video::extract_video_thumbnail_64(path)
-            } else if let Ok(img) = image::load_from_memory(&orig_bytes) {
+            } else if let Ok(img) = image::open(path) {
                 let rgba = img.into_rgba8();
                 generate_thumbnail(rgba.width(), rgba.height(), rgba.as_raw(), 64)
             } else {
@@ -984,8 +987,10 @@ pub fn run_file_with_hud(
 
             if let Ok(res) = optimizer::optimize_file(path, output.as_deref(), &config) {
                 let target_path = output.clone().unwrap_or_else(|| path.clone());
-                if res.was_modified && output.is_none() && !orig_bytes.is_empty() {
-                    local_backups.push((target_path.clone(), orig_bytes));
+                if res.was_modified && output.is_none() {
+                    if let Some(b) = backup {
+                        local_backups.push(b);
+                    }
                 }
                 let summary = OptimizationSummary {
                     source_label: file_name,
@@ -1058,9 +1063,10 @@ pub fn run_file_with_hud(
                 match hud.handle_window_event(event) {
                     HudAction::Revert(_) => {
                         let mut total_restored = 0usize;
-                        for (path, orig_bytes) in backups.drain(..) {
-                            total_restored += orig_bytes.len();
-                            let _ = fs::write(path, orig_bytes);
+                        for backup in backups.drain(..) {
+                            if let Ok((_, restored_len)) = backup.restore() {
+                                total_restored += restored_len;
+                            }
                         }
                         if total_restored > 0 {
                             hud.show_reverted("File", total_restored);

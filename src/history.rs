@@ -111,13 +111,10 @@ impl OptimizationHistory {
         Ok(path)
     }
 
-    /// Persists history to an explicit path.
+    /// Persists history atomically to an explicit path.
     pub fn save_to_path(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(self)?;
-        fs::write(path, json)?;
+        crate::optimizer::atomic_write_file(path, json.as_bytes())?;
         Ok(())
     }
 

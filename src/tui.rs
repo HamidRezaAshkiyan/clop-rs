@@ -447,10 +447,12 @@ impl TuiApp {
                     self.downloads.optimize_pending_file(pending, &self.config)
                 {
                     if let Some(ref b) = self.downloads.last_backup {
-                        self.last_undo = Some(LastUndoTarget::File {
-                            path: b.path.clone(),
-                            original: b.original_bytes.clone(),
-                        });
+                        if let Ok(original) = fs::read(&b.backup_path) {
+                            self.last_undo = Some(LastUndoTarget::File {
+                                path: b.original_path.clone(),
+                                original,
+                            });
+                        }
                     }
                     self.record_optimization(HistorySource::Downloads, &summary, Some(&path));
                 }

@@ -135,14 +135,11 @@ impl AppConfig {
         Ok(cfg)
     }
 
-    /// Saves the configuration to disk.
+    /// Saves the configuration atomically to disk.
     pub fn save(&self) -> Result<PathBuf> {
         let path = Self::config_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let contents = toml::to_string_pretty(self)?;
-        fs::write(&path, contents)?;
+        crate::optimizer::atomic_write_file(&path, contents.as_bytes())?;
         Ok(path)
     }
 
