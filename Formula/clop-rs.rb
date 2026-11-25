@@ -1,13 +1,13 @@
 class ClopRs < Formula
   desc "Minimal-footprint clipboard, file, PDF & video optimizer (GUI + clop-cli)"
   homepage "https://github.com/HamidRezaAshkiyan/clop-rs"
-  version "1.0.0"
+  version "1.1.0"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/HamidRezaAshkiyan/clop-rs/releases/download/v#{version}/clop-rs-v#{version}-macos-arm64.tar.gz"
-      sha256 "b6f21d16324a9265d52cf5c673ad1d7d755923c5d7f4384f8ab450c8b1daadad"
+      sha256 "ceea75638698efda7b45f04e819f75d055fdf179675939cb931892e3a27f5661"
     end
   end
 
