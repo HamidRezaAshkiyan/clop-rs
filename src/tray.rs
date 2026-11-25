@@ -6,6 +6,7 @@ use crate::history::{HistorySource, OptimizationHistory};
 use crate::hud::{FloatingHud, HudAction, HudPhase, RevertSource};
 use crate::optimizer::{self, format_bytes, generate_thumbnail, DiskBackup};
 use crate::ui::{self, AppEvent, DashboardWindow, SystemToggleKind, UiCommand, WorkerOutcome};
+use crate::updater::{self, UpdateStatus};
 use crate::{pdf, platform, video};
 use anyhow::{Context, Result};
 use std::fs;
@@ -110,6 +111,7 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
         false,
         None,
     );
+    let check_updates_item = MenuItem::new("Check for Updates…", true, None);
     let quit_item = MenuItem::new("Quit clop-rs", true, None);
 
     menu.append(&open_dashboard_item)?;
@@ -129,6 +131,7 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
     menu.append(&autostart_item)?;
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&version_item)?;
+    menu.append(&check_updates_item)?;
     menu.append(&quit_item)?;
 
     let icon = build_tray_icon()?;
@@ -146,6 +149,30 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
     let mut dashboard = DashboardWindow::new(proxy);
     let mut history = OptimizationHistory::load();
     let mut session_stats = SessionStats::default();
+
+    // Load cached update status and optionally schedule a silent background check
+    let mut latest_update: Option<UpdateStatus> = updater::load_cached_status();
+    if let Some(ref cached) = latest_update {
+        dashboard.set_update_status(cached.clone());
+        if cached.update_available {
+            if let Some(ref ver) = cached.latest_version {
+                check_updates_item.set_text(format!("⬆ Update Available (v{}) — Download…", ver));
+            }
+        }
+    }
+    if config.check_for_updates
+        && updater::should_auto_check(latest_update.as_ref(), updater::now_unix_secs())
+    {
+        let update_proxy = event_loop.create_proxy();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(3));
+            let status = updater::check_for_updates();
+            let _ = update_proxy.send_event(AppEvent::UpdateCheckResult {
+                status: Box::new(status),
+                manual: false,
+            });
+        });
+    }
 
     // Spawn dedicated background worker thread for Clipboard + Downloads watching & optimization
     let (worker_tx, worker_rx) = mpsc::channel::<WorkerCmd>();
@@ -172,6 +199,7 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
     let context_menu_id = context_menu_item.id().clone();
     let show_hud_id = show_hud_item.id().clone();
     let autostart_id = autostart_item.id().clone();
+    let check_updates_id = check_updates_item.id().clone();
     let quit_id = quit_item.id().clone();
 
     log::info!(
@@ -207,6 +235,58 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
                         autostart_enabled,
                         context_menu_enabled,
                     );
+                }
+                AppEvent::UpdateCheckResult { status, manual } => {
+                    let status = *status;
+                    if status.error.is_none() {
+                        let _ = updater::save_cached_status(&status);
+                    }
+                    if status.update_available {
+                        let ver = status.latest_version.as_deref().unwrap_or("new");
+                        check_updates_item
+                            .set_text(format!("⬆ Update Available (v{}) — Download…", ver));
+                        if manual {
+                            status_item.set_text(format!("Update available: v{}", ver));
+                            if dashboard.is_open() {
+                                dashboard.send_toast(
+                                    &format!("Update available: clop-rs v{}", ver),
+                                    "success",
+                                );
+                            }
+                        }
+                    } else {
+                        check_updates_item.set_text("Check for Updates…");
+                        if manual {
+                            if let Some(ref err) = status.error {
+                                status_item.set_text("Update check failed");
+                                if dashboard.is_open() {
+                                    dashboard.send_toast(
+                                        &format!("Update check failed: {}", err),
+                                        "error",
+                                    );
+                                }
+                            } else {
+                                status_item.set_text(format!(
+                                    "clop-rs v{} is up to date",
+                                    status.current_version
+                                ));
+                                if dashboard.is_open() {
+                                    dashboard.send_toast(
+                                        &format!(
+                                            "clop-rs v{} is up to date",
+                                            status.current_version
+                                        ),
+                                        "info",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    dashboard.set_update_status(status.clone());
+                    if dashboard.is_open() {
+                        dashboard.send_update_status(&status);
+                    }
+                    latest_update = Some(status);
                 }
                 AppEvent::SystemToggleResult {
                     kind,
@@ -473,6 +553,24 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
                         }
                     } else if menu_id == optimize_now_id {
                         let _ = worker_tx.send(WorkerCmd::OptimizeClipboardNow { from_ui: false });
+                    } else if menu_id == check_updates_id {
+                        if let Some(ref status) = latest_update {
+                            if status.update_available {
+                                if let Err(err) = platform::open_url(&status.release_url) {
+                                    log::error!("Failed to open release URL: {}", err);
+                                }
+                                return;
+                            }
+                        }
+                        check_updates_item.set_text("Checking for Updates…");
+                        let bg_proxy = dashboard.proxy_clone();
+                        thread::spawn(move || {
+                            let status = updater::check_for_updates();
+                            let _ = bg_proxy.send_event(AppEvent::UpdateCheckResult {
+                                status: Box::new(status),
+                                manual: true,
+                            });
+                        });
                     }
                 }
                 AppEvent::UiFileHover(active) => {
@@ -696,6 +794,25 @@ pub fn run_with_tray(mut config: AppConfig, open_ui_on_start: bool) -> Result<()
                                 context_menu_enabled,
                             );
                             dashboard.send_toast("Cleared optimization history", "info");
+                        }
+                        UiCommand::CheckForUpdates => {
+                            check_updates_item.set_text("Checking for Updates…");
+                            let bg_proxy = dashboard.proxy_clone();
+                            thread::spawn(move || {
+                                let status = updater::check_for_updates();
+                                let _ = bg_proxy.send_event(AppEvent::UpdateCheckResult {
+                                    status: Box::new(status),
+                                    manual: true,
+                                });
+                            });
+                        }
+                        UiCommand::OpenReleaseUrl { url } => {
+                            if let Err(err) = platform::open_url(&url) {
+                                dashboard.send_toast(
+                                    &format!("Could not open browser: {}", err),
+                                    "error",
+                                );
+                            }
                         }
                     },
                     Err(err) => {

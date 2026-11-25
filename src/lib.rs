@@ -10,4 +10,5 @@ pub mod platform;
 pub mod tray;
 pub mod tui;
 pub mod ui;
+pub mod updater;
 pub mod video;

@@ -212,6 +212,18 @@ enum CliCommand {
         #[command(flatten)]
         opts: OptimizeFlags,
     },
+
+    /// Check GitHub Releases for a newer version of clop-rs.
+    #[command(visible_alias = "check-update")]
+    Update {
+        /// Output update status as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Open the latest release page in your browser if an update is available.
+        #[arg(long)]
+        open: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -649,6 +661,34 @@ fn main() -> Result<()> {
             clop_rs::tui::run_tui(config, launch)?;
         }
 
+        CliCommand::Update { json, open } => {
+            let status = clop_rs::updater::check_for_updates();
+            if status.error.is_none() {
+                let _ = clop_rs::updater::save_cached_status(&status);
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else if let Some(ref err) = status.error {
+                eprintln!("✗ Update check failed: {}", err);
+                bail!("{}", err);
+            } else if status.update_available {
+                let latest = status.latest_version.as_deref().unwrap_or("unknown");
+                println!(
+                    "⬆ Update available: v{} -> v{}",
+                    status.current_version, latest
+                );
+                println!("  Download: {}", status.release_url);
+                if let Some(ref notes) = status.release_notes {
+                    println!("\n{}", notes);
+                }
+            } else {
+                println!("✓ clop-rs v{} is up to date.", status.current_version);
+            }
+            if open && status.update_available {
+                clop_rs::platform::open_url(&status.release_url)?;
+            }
+        }
+
         CliCommand::Watch {
             downloads,
             downloads_dir,
@@ -831,8 +871,11 @@ fn apply_config_key(cfg: &mut AppConfig, key: &str, value: &str) -> Result<()> {
             let ms: u64 = v.parse()?;
             cfg.poll_interval_ms = ms.max(50);
         }
+        "check_for_updates" => {
+            cfg.check_for_updates = parse_bool(v)?;
+        }
         _ => bail!(
-            "Unknown config key `{}`. Supported keys: preset, quality, mode, oxipng_level, strip_metadata, show_floating_hud, watch_downloads, downloads_dir, max_width, max_height, scale_factor, poll_interval_ms",
+            "Unknown config key `{}`. Supported keys: preset, quality, mode, oxipng_level, strip_metadata, show_floating_hud, watch_downloads, downloads_dir, max_width, max_height, scale_factor, poll_interval_ms, check_for_updates",
             key
         ),
     }

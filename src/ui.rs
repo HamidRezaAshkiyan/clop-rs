@@ -7,6 +7,7 @@ use crate::optimizer::{
     self, generate_thumbnail, supported_formats_info, DiskBackup, SupportedFormatsInfo,
     SUPPORTED_DOCUMENT_EXTENSIONS, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_VIDEO_EXTENSIONS,
 };
+use crate::updater::UpdateStatus;
 use crate::{pdf, platform, video};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -80,6 +81,10 @@ pub enum AppEvent {
         enabled: bool,
         error: Option<String>,
     },
+    UpdateCheckResult {
+        status: Box<UpdateStatus>,
+        manual: bool,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -129,6 +134,8 @@ pub enum UiCommand {
     OptimizeClipboardNow,
     RevertClipboard,
     ClearHistory,
+    CheckForUpdates,
+    OpenReleaseUrl { url: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +146,7 @@ pub struct SystemUiState {
     pub paused: bool,
     pub can_revert_clipboard: bool,
     pub effective_downloads_dir: String,
+    pub update: Option<UpdateStatus>,
 }
 
 /// Graphical Dashboard window hosting Settings, Clipboard History, and Drag-and-Drop File Optimizer.
@@ -148,6 +156,8 @@ pub struct DashboardWindow {
     proxy: EventLoopProxy<AppEvent>,
     /// Cached supported format & external tool availability (avoids scanning PATH on every UI click).
     formats_cache: SupportedFormatsInfo,
+    /// Latest known GitHub Releases update status.
+    update_status: Option<UpdateStatus>,
     /// Per-file disk-backed backups so the user can revert files optimized in the UI without RAM spikes.
     pub file_backups: HashMap<String, DiskBackup>,
 }
@@ -159,8 +169,20 @@ impl DashboardWindow {
             webview: None,
             proxy,
             formats_cache: supported_formats_info(),
+            update_status: None,
             file_backups: HashMap::new(),
         }
+    }
+
+    pub fn set_update_status(&mut self, status: UpdateStatus) {
+        self.update_status = Some(status);
+    }
+
+    pub fn send_update_status(&self, status: &UpdateStatus) {
+        self.send_json(&serde_json::json!({
+            "type": "update_status",
+            "update": status,
+        }));
     }
 
     pub fn window_id(&self) -> Option<WindowId> {
@@ -285,6 +307,7 @@ impl DashboardWindow {
                 paused,
                 can_revert_clipboard,
                 effective_downloads_dir,
+                update: self.update_status.clone(),
             }
         });
         self.send_json(&payload);
@@ -316,6 +339,7 @@ impl DashboardWindow {
                 paused,
                 can_revert_clipboard,
                 effective_downloads_dir,
+                update: self.update_status.clone(),
             }
         });
         self.send_json(&payload);

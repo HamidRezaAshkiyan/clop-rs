@@ -5,6 +5,16 @@ All notable changes to `clop-rs` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-25
+
+### Added
+- **Built-in Update Checker (`src/updater.rs`)**:
+  - Zero-dependency GitHub Releases update checker with semantic version comparison and 24-hour disk cache (`update_cache.json`).
+  - Automatic silent background check on startup (configurable via `check_for_updates` in `config.toml` or Dashboard Settings, enabled by default).
+  - **System Tray / Menu Bar**: Added `"Check for Updates…"` menu item that switches to `"⬆ Update Available (vX.Y.Z) — Download…"` when a newer release is found and opens the GitHub Release page in your browser.
+  - **Dashboard UI**: Added header update pill when a newer version is available and an **Updates** card in Settings with auto-check toggle, manual `"Check Now"` button, and direct `"Download →"` action.
+  - **CLI**: Added `clop-rs update` / `clop-rs check-update` and `clop-cli update` / `clop-cli check-update` (supporting `--json` and `--open`), plus `clop-cli config set check_for_updates true|false`.
+
 ## [1.0.0] - 2026-11-24
 
 ### Added

@@ -10,7 +10,7 @@ use clop_rs::config::{AppConfig, Cli, Commands};
 use clop_rs::downloads::DownloadsWatcher;
 use clop_rs::history::{HistorySource, OptimizationHistory};
 use clop_rs::optimizer::{self, format_bytes};
-use clop_rs::{context_menu, platform, tray};
+use clop_rs::{context_menu, platform, tray, updater};
 use std::thread;
 use std::time::Duration;
 
@@ -218,6 +218,34 @@ fn main() -> Result<()> {
                             "disabled"
                         }
                     );
+                }
+                return Ok(());
+            }
+            Commands::Update { json, open } => {
+                let status = updater::check_for_updates();
+                if status.error.is_none() {
+                    let _ = updater::save_cached_status(&status);
+                }
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&status)?);
+                } else if let Some(ref err) = status.error {
+                    eprintln!("✗ Update check failed: {}", err);
+                    bail!("{}", err);
+                } else if status.update_available {
+                    let latest = status.latest_version.as_deref().unwrap_or("unknown");
+                    println!(
+                        "⬆ Update available: v{} -> v{}",
+                        status.current_version, latest
+                    );
+                    println!("  Download: {}", status.release_url);
+                    if let Some(ref notes) = status.release_notes {
+                        println!("\n{}", notes);
+                    }
+                } else {
+                    println!("✓ clop-rs v{} is up to date.", status.current_version);
+                }
+                if *open && status.update_available {
+                    platform::open_url(&status.release_url)?;
                 }
                 return Ok(());
             }

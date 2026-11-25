@@ -272,6 +272,50 @@ pub fn is_autostart_enabled() -> bool {
     }
 }
 
+/// Opens an `http://` or `https://` URL in the user's default web browser.
+pub fn open_url(url: &str) -> Result<()> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        anyhow::bail!("Refusing to open non-HTTP(S) URL: {}", trimmed);
+    }
+    if trimmed
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '&' | '|' | '^' | '<' | '>' | '`'))
+    {
+        anyhow::bail!("Refusing to open URL with unsafe characters");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .context("Failed to launch browser via `open`")?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", trimmed])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .context("Failed to launch browser via `cmd /C start`")?;
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(trimmed)
+            .spawn()
+            .context("Failed to launch browser via `xdg-open`")?;
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use anyhow::{bail, Result};

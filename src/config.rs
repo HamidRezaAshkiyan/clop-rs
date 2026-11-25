@@ -62,6 +62,10 @@ fn default_schema_version() -> u32 {
     CONFIG_SCHEMA_VERSION
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Persistent configuration stored in `~/Library/Application Support/clop-rs/config.toml` (macOS),
 /// `~/.config/clop-rs/config.toml` (Linux), or `%APPDATA%\clop-rs\config.toml` (Windows).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +108,9 @@ pub struct AppConfig {
     /// Case-insensitive wildcard filename patterns to skip during folder watching (e.g. `*-raw.*`, `secret_*`).
     #[serde(default)]
     pub ignore_patterns: Vec<String>,
+    /// Automatically check GitHub Releases for newer versions of `clop-rs` (at most once per 24h).
+    #[serde(default = "default_true")]
+    pub check_for_updates: bool,
     /// Run without a system tray / menu bar icon.
     pub headless: bool,
 }
@@ -128,6 +135,7 @@ impl Default for AppConfig {
             downloads_dir: None,
             extra_watch_dirs: Vec::new(),
             ignore_patterns: Vec::new(),
+            check_for_updates: true,
             headless: false,
         }
     }
@@ -516,6 +524,16 @@ pub enum Commands {
         /// Remove the right-click context menu.
         #[arg(long)]
         disable: bool,
+    },
+    /// Check GitHub Releases for a newer version of clop-rs.
+    #[command(visible_alias = "check-update")]
+    Update {
+        /// Output update status as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Open the latest release page in your browser if an update is available.
+        #[arg(long)]
+        open: bool,
     },
 }
 

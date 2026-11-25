@@ -94,6 +94,25 @@
     border-radius: 99px;
     line-height: 1.3;
   }
+  .update-pill {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    border-radius: 99px;
+    font-size: 11.5px;
+    font-weight: 700;
+    background: var(--blue-bg);
+    color: var(--blue);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .update-pill.visible { display: inline-flex; }
+  .update-pill:hover {
+    background: rgba(56, 189, 248, 0.22);
+    border-color: var(--blue);
+  }
   .brand-sub {
     font-size: 11px;
     color: var(--text-muted);
@@ -770,6 +789,10 @@
     </nav>
 
     <div class="header-right">
+      <button class="update-pill" id="update-pill" title="A newer version of clop-rs is available — click to download">
+        <span>⬆</span>
+        <span id="update-pill-text">Update</span>
+      </button>
       <button class="status-pill" id="pause-pill" title="Toggle auto clipboard optimization">
         <span class="status-dot"></span>
         <span id="pause-pill-text">Watching</span>
@@ -1034,6 +1057,31 @@
         </div>
       </div>
 
+      <div class="card">
+        <div class="card-title">Updates</div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Automatically Check for Updates</div>
+            <div class="setting-help">Checks GitHub Releases at most once per day in the background.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-check-updates" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-label" id="update-status-title">clop-rs</div>
+            <div class="setting-help" id="update-status-desc">Click "Check Now" to check GitHub Releases for updates.</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <button class="btn btn-sm" id="btn-check-updates">Check Now</button>
+            <button class="btn btn-primary btn-sm" id="btn-download-update" style="display:none;">Download →</button>
+          </div>
+        </div>
+      </div>
+
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <span style="font-size:11.5px; color:var(--text-dim);">Changes are saved automatically to config.toml</span>
         <button class="btn btn-danger btn-sm" id="btn-reset-config">Reset to Defaults</button>
@@ -1102,6 +1150,27 @@
   // Pause pill
   document.getElementById("pause-pill").addEventListener("click", () => {
     post({ type: "toggle_pause", paused: !state.system.paused });
+  });
+
+  // Update actions
+  document.getElementById("update-pill").addEventListener("click", () => {
+    const u = state.system.update;
+    if (u && u.release_url) {
+      post({ type: "open_release_url", url: u.release_url });
+    }
+  });
+  document.getElementById("btn-download-update").addEventListener("click", () => {
+    const u = state.system.update;
+    if (u && u.release_url) {
+      post({ type: "open_release_url", url: u.release_url });
+    }
+  });
+  document.getElementById("btn-check-updates").addEventListener("click", () => {
+    const btn = document.getElementById("btn-check-updates");
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    document.getElementById("update-status-desc").textContent = "Checking GitHub Releases…";
+    post({ type: "check_for_updates" });
   });
 
   // File picker buttons
@@ -1193,6 +1262,9 @@
   });
   document.getElementById("toggle-autostart").addEventListener("change", (e) => {
     post({ type: "toggle_autostart", enabled: e.target.checked });
+  });
+  document.getElementById("toggle-check-updates").addEventListener("change", (e) => {
+    sendConfigPatch({ check_for_updates: e.target.checked });
   });
   document.getElementById("btn-pick-downloads-dir").addEventListener("click", () => {
     post({ type: "pick_downloads_dir" });
@@ -1308,12 +1380,53 @@
     document.getElementById("toggle-watch-downloads").checked = !!c.watch_downloads;
     document.getElementById("toggle-context-menu").checked = !!state.system.context_menu;
     document.getElementById("toggle-autostart").checked = !!state.system.autostart;
+    document.getElementById("toggle-check-updates").checked = c.check_for_updates !== false;
     document.getElementById("downloads-dir-label").textContent = state.system.effective_downloads_dir || "~/Downloads";
 
     const pausePill = document.getElementById("pause-pill");
     pausePill.classList.toggle("paused", !!state.system.paused);
     document.getElementById("pause-pill-text").textContent = state.system.paused ? "Paused" : "Watching";
     document.getElementById("btn-revert-clipboard").disabled = !state.system.can_revert_clipboard;
+    renderUpdateStatus();
+  }
+
+  function renderUpdateStatus() {
+    const u = state.system.update;
+    const ver = state.system.version ? "v" + state.system.version : "";
+    const pill = document.getElementById("update-pill");
+    const pillText = document.getElementById("update-pill-text");
+    const titleEl = document.getElementById("update-status-title");
+    const descEl = document.getElementById("update-status-desc");
+    const checkBtn = document.getElementById("btn-check-updates");
+    const dlBtn = document.getElementById("btn-download-update");
+
+    checkBtn.disabled = false;
+    checkBtn.textContent = "Check Now";
+    titleEl.textContent = ver ? `Installed: clop-rs ${ver}` : "clop-rs";
+
+    if (!u) {
+      pill.classList.remove("visible");
+      dlBtn.style.display = "none";
+      descEl.textContent = 'Click "Check Now" to check GitHub Releases for updates.';
+      return;
+    }
+
+    if (u.update_available && u.latest_version) {
+      pillText.textContent = "v" + u.latest_version;
+      pill.classList.add("visible");
+      dlBtn.textContent = `Download v${u.latest_version} →`;
+      dlBtn.style.display = "inline-flex";
+      descEl.textContent = `New version v${u.latest_version} is available on GitHub Releases.`;
+    } else if (u.error) {
+      pill.classList.remove("visible");
+      dlBtn.style.display = "none";
+      descEl.textContent = "Last check failed: " + u.error;
+    } else {
+      pill.classList.remove("visible");
+      dlBtn.style.display = "none";
+      const ago = u.checked_at_unix ? ` (checked ${formatTimeAgo(u.checked_at_unix)})` : "";
+      descEl.textContent = `You're up to date${ago}.`;
+    }
   }
 
   function renderFileQueue() {
@@ -1520,6 +1633,10 @@
       }
       case "toast":
         showToast(msg.message, msg.kind || "info");
+        break;
+      case "update_status":
+        state.system.update = msg.update || null;
+        renderUpdateStatus();
         break;
     }
   };

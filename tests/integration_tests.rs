@@ -782,4 +782,40 @@ fn test_ui_command_ipc_deserialization() {
         pause,
         clop_rs::ui::UiCommand::TogglePause { paused: true }
     ));
+
+    let check_upd: clop_rs::ui::UiCommand =
+        serde_json::from_str(r#"{"type":"check_for_updates"}"#).expect("parse check_for_updates");
+    assert!(matches!(check_upd, clop_rs::ui::UiCommand::CheckForUpdates));
+
+    let open_rel: clop_rs::ui::UiCommand = serde_json::from_str(
+        r#"{"type":"open_release_url","url":"https://github.com/HamidRezaAshkiyan/clop-rs/releases"}"#,
+    )
+    .expect("parse open_release_url");
+    assert!(matches!(
+        open_rel,
+        clop_rs::ui::UiCommand::OpenReleaseUrl { .. }
+    ));
+}
+
+#[test]
+fn test_updater_config_default_and_semver() {
+    // Legacy v1.0.0 config without `check_for_updates` must default to true
+    let legacy_toml = r#"
+schema_version = 1
+poll_interval_ms = 350
+"#;
+    let parsed: AppConfig = toml::from_str(legacy_toml).expect("parse legacy config");
+    assert!(parsed.check_for_updates);
+
+    assert!(clop_rs::updater::is_newer_version("1.0.0", "v1.1.0"));
+    assert!(!clop_rs::updater::is_newer_version("1.1.0", "v1.1.0"));
+    assert!(!clop_rs::updater::is_newer_version("1.1.0", "v1.0.9"));
+
+    let status = clop_rs::updater::parse_github_release_json(
+        "1.0.0",
+        r#"{"tag_name":"v1.1.0","html_url":"https://github.com/HamidRezaAshkiyan/clop-rs/releases/tag/v1.1.0","body":"Update checker added.","draft":false,"prerelease":false}"#,
+    )
+    .expect("parse release json");
+    assert!(status.update_available);
+    assert_eq!(status.latest_version.as_deref(), Some("1.1.0"));
 }
